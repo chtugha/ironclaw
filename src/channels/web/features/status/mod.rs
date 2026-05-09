@@ -42,7 +42,6 @@ pub(crate) struct GatewayStatusResponse {
     llm_backend: String,
     llm_model: String,
     enabled_channels: Vec<String>,
-    engine_v2_enabled: bool,
 }
 
 /// `GET /api/gateway/status` — runtime snapshot for the admin dashboard.
@@ -111,6 +110,5 @@ pub(crate) async fn gateway_status_handler(
         llm_backend: active_config.llm_backend,
         llm_model: active_config.llm_model,
         enabled_channels: active_config.enabled_channels,
-        engine_v2_enabled: crate::bridge::is_engine_v2_enabled(),
     })
 }

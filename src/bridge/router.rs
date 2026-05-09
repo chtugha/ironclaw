@@ -48,13 +48,6 @@ pub enum BridgeOutcome {
 
 use std::collections::HashSet;
 
-/// Check if the engine v2 is enabled via `ENGINE_V2=true` environment variable.
-pub fn is_engine_v2_enabled() -> bool {
-    std::env::var("ENGINE_V2")
-        .map(|v| v == "true" || v == "1")
-        .unwrap_or(false)
-}
-
 /// Shorthand for building an `Error` from an engine-related failure.
 fn engine_err(context: &str, e: impl std::fmt::Display) -> Error {
     Error::from(crate::error::JobError::ContextError {
@@ -1552,7 +1545,7 @@ async fn submit_pending_auth_credential(
 
 /// Get or initialize the engine state using the agent's dependencies.
 ///
-/// Called eagerly at startup (from `Agent::run()`) when `ENGINE_V2=true`,
+/// Called eagerly at startup (from `Agent::run()`),
 /// and defensively from each handler as a lazy fallback.
 pub async fn init_engine(agent: &Agent) -> Result<(), Error> {
     let lock = ENGINE_STATE.get_or_init(|| RwLock::new(None));
@@ -7172,7 +7165,6 @@ mod tests {
                 multi_tenant: false,
                 max_llm_concurrent_per_user: None,
                 max_jobs_concurrent_per_user: None,
-                engine_v2: true,
             },
             deps,
             channels,
@@ -8729,7 +8721,6 @@ mod tests {
                 multi_tenant: false,
                 max_llm_concurrent_per_user: None,
                 max_jobs_concurrent_per_user: None,
-                engine_v2: true,
             },
             deps,
             Arc::new(manager),

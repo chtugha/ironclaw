@@ -110,9 +110,6 @@ pub(crate) fn truncate_for_preview(output: &str, max_chars: usize) -> String {
 /// Returns `true` when the message should be routed as an approval (there IS
 /// a pending approval or it's an explicit slash command). Returns `false`
 /// when the message should be treated as regular `UserInput`.
-///
-/// Used by the legacy routing path; the engine_v2 path performs an equivalent
-/// check earlier (before the BeforeInbound hook).
 fn should_route_as_approval(thread_state: ThreadState, raw_content: &str) -> bool {
     thread_state == ThreadState::AwaitingApproval || raw_content.trim().starts_with('/')
 }
@@ -687,8 +684,7 @@ impl Agent {
         let empty_meta = serde_json::Value::Object(serde_json::Map::new());
 
         // Engine threads
-        if self.config.engine_v2
-            && let Ok(threads) = crate::bridge::list_engine_threads(None, self.owner_id()).await
+        if let Ok(threads) = crate::bridge::list_engine_threads(None, self.owner_id()).await
         {
             let summaries: Vec<crate::channels::EngineThreadSummary> = threads
                 .into_iter()
@@ -739,12 +735,10 @@ impl Agent {
 
     /// Run the agent main loop.
     pub async fn run(self) -> Result<(), Error> {
-        // Eagerly initialize engine v2 so gateway API endpoints can serve
+        // Eagerly initialize engine state so gateway API endpoints can serve
         // data (projects, missions, threads) before the first chat message.
-        if self.config.engine_v2
-            && let Err(e) = crate::bridge::init_engine(&self).await
-        {
-            tracing::debug!("engine v2: eager init failed: {e}");
+        if let Err(e) = crate::bridge::init_engine(&self).await {
+            tracing::debug!("engine: eager init failed: {e}");
         }
 
         // Start channels
@@ -1262,9 +1256,8 @@ impl Agent {
                 }
             }
 
-            // Refresh engine v2 thread list in the TUI sidebar after each turn.
-            if self.config.engine_v2
-                && let Ok(threads) =
+            // Refresh engine thread list in the TUI sidebar after each turn.
+            if let Ok(threads) =
                     crate::bridge::list_engine_threads(None, &message.user_id).await
             {
                 let summaries: Vec<crate::channels::EngineThreadSummary> = threads
@@ -1418,14 +1411,11 @@ impl Agent {
             std::any::type_name_of_val(&submission)
         );
 
-        // Engine V2 early downgrade: bare-keyword ApprovalResponse → UserInput
+        // Early downgrade: bare-keyword ApprovalResponse → UserInput
         // when no approval gate or auth flow is pending. Done before the
         // BeforeInbound hook check so the downgraded message flows through
         // the full UserInput pipeline (hooks, drain loop, etc.).
-        // Only applies to engine_v2 because the legacy path needs session/
-        // thread state (not yet resolved) to determine AwaitingApproval.
-        if self.config.engine_v2
-            && matches!(&submission, Submission::ApprovalResponse { .. })
+        if matches!(&submission, Submission::ApprovalResponse { .. })
             && !message.content.trim().starts_with('/')
         {
             let has_pending = crate::bridge::has_pending_auth(&message.user_id).await
@@ -1473,110 +1463,83 @@ impl Agent {
             }
         }
 
-        // Engine V2 routing (Strategy C: parallel deployment).
-        // Bridge handlers return BridgeOutcome which maps directly to
-        // HandleOutcome — gate status is encoded in the return type, not
-        // queried post-hoc.
-        if self.config.engine_v2 {
-            match &submission {
-                Submission::UserInput { content } => {
+        // Engine routing — bridge handlers return BridgeOutcome which maps
+        // directly to HandleOutcome; gate status is encoded in the return type,
+        // not queried post-hoc.
+        match &submission {
+            Submission::UserInput { content } => {
+                return crate::bridge::handle_with_engine(self, message, content)
+                    .await
+                    .map(HandleOutcome::from);
+            }
+            Submission::ApprovalResponse { approved, always } => {
+                // Reaching here means the message is a slash command (/approve,
+                // /deny) or has a pending gate/auth — early downgrade above
+                // already handled the bare-keyword-with-no-gate case.
+                if crate::bridge::has_pending_auth(&message.user_id).await {
+                    let content = &message.content;
                     return crate::bridge::handle_with_engine(self, message, content)
                         .await
                         .map(HandleOutcome::from);
                 }
-                Submission::ApprovalResponse { approved, always } => {
-                    // Reaching here means the message is a slash command (/approve,
-                    // /deny) or has a pending gate/auth — early downgrade above
-                    // already handled the bare-keyword-with-no-gate case.
-                    if crate::bridge::has_pending_auth(&message.user_id).await {
-                        let content = &message.content;
-                        return crate::bridge::handle_with_engine(self, message, content)
-                            .await
-                            .map(HandleOutcome::from);
-                    }
-                    return crate::bridge::handle_approval(self, message, *approved, *always)
-                        .await
-                        .map(HandleOutcome::from);
-                }
-                Submission::ExecApproval {
-                    request_id,
-                    approved,
-                    always,
-                } => {
-                    return crate::bridge::handle_exec_approval(
-                        self,
-                        message,
-                        *request_id,
-                        *approved,
-                        *always,
-                    )
+                return crate::bridge::handle_approval(self, message, *approved, *always)
                     .await
                     .map(HandleOutcome::from);
-                }
-                Submission::ExternalCallback { request_id } => {
-                    return crate::bridge::handle_external_callback(self, message, *request_id)
-                        .await
-                        .map(HandleOutcome::from);
-                }
-                Submission::GateAuthResolution {
-                    request_id,
-                    resolution,
-                } => {
-                    return crate::bridge::handle_auth_gate_resolution(
-                        self,
-                        message,
-                        *request_id,
-                        resolution.clone(),
-                    )
+            }
+            Submission::ExecApproval {
+                request_id,
+                approved,
+                always,
+            } => {
+                return crate::bridge::handle_exec_approval(
+                    self,
+                    message,
+                    *request_id,
+                    *approved,
+                    *always,
+                )
+                .await
+                .map(HandleOutcome::from);
+            }
+            Submission::ExternalCallback { request_id } => {
+                return crate::bridge::handle_external_callback(self, message, *request_id)
                     .await
                     .map(HandleOutcome::from);
-                }
-                Submission::Interrupt => {
-                    return crate::bridge::handle_interrupt(self, message)
-                        .await
-                        .map(HandleOutcome::from);
-                }
-                Submission::NewThread => {
-                    return crate::bridge::handle_new_thread(self, message)
-                        .await
-                        .map(HandleOutcome::from);
-                }
-                Submission::Clear => {
-                    return crate::bridge::handle_clear(self, message)
-                        .await
-                        .map(HandleOutcome::from);
-                }
-                Submission::Expected { description } => {
-                    return crate::bridge::handle_expected(self, message, description)
-                        .await
-                        .map(HandleOutcome::from);
-                }
-                // Undo/Redo/Resume/SwitchThread: v1-only (engine has no undo;
-                // thread switching is implicit via ConversationManager).
-                // Compact/Summarize/Suggest: orthogonal to engine (compaction is internal).
-                // Heartbeat/SystemCommand/JobStatus/JobCancel/Quit: v1 infrastructure.
-                _ => {}
             }
-        }
-
-        // V2-only structured submissions must fail before any session/thread
-        // resolution on the legacy path. Otherwise a crafted request can
-        // switch the active thread via conversation_scope before returning the
-        // expected ENGINE_V2 error.
-        if !self.config.engine_v2 {
-            match submission {
-                Submission::ExternalCallback { .. } => {
-                    return Ok(HandleOutcome::Respond(
-                        "Error: External callbacks require ENGINE_V2".to_string(),
-                    ));
-                }
-                Submission::GateAuthResolution { .. } => {
-                    return Ok(HandleOutcome::Respond(
-                        "Error: Auth gate resolution requires ENGINE_V2".to_string(),
-                    ));
-                }
-                _ => {}
+            Submission::GateAuthResolution {
+                request_id,
+                resolution,
+            } => {
+                return crate::bridge::handle_auth_gate_resolution(
+                    self,
+                    message,
+                    *request_id,
+                    resolution.clone(),
+                )
+                .await
+                .map(HandleOutcome::from);
             }
+            Submission::Interrupt => {
+                return crate::bridge::handle_interrupt(self, message)
+                    .await
+                    .map(HandleOutcome::from);
+            }
+            Submission::NewThread => {
+                return crate::bridge::handle_new_thread(self, message)
+                    .await
+                    .map(HandleOutcome::from);
+            }
+            Submission::Clear => {
+                return crate::bridge::handle_clear(self, message)
+                    .await
+                    .map(HandleOutcome::from);
+            }
+            Submission::Expected { description } => {
+                return crate::bridge::handle_expected(self, message, description)
+                    .await
+                    .map(HandleOutcome::from);
+            }
+            _ => {}
         }
 
         // Hydrate thread from DB if it's a historical thread not in memory
@@ -1962,10 +1925,10 @@ impl Agent {
                 .await
             }
             Submission::ExternalCallback { .. } => Ok(SubmissionResult::Error {
-                message: "External callbacks require ENGINE_V2".to_string(),
+                message: "External callbacks are handled by the engine router".to_string(),
             }),
             Submission::GateAuthResolution { .. } => Ok(SubmissionResult::Error {
-                message: "Auth gate resolution requires ENGINE_V2".to_string(),
+                message: "Auth gate resolution is handled by the engine router".to_string(),
             }),
             Submission::ApprovalResponse { approved, always } => {
                 let thread_state = {
@@ -2165,131 +2128,8 @@ mod tests {
         chat_tool_execution_metadata, is_single_message_repl, resolve_routine_notification_user,
         should_fallback_routine_notification, truncate_for_preview,
     };
-    use crate::agent::agent_loop::{Agent, AgentDeps, HandleOutcome};
-    use crate::agent::cost_guard::{CostGuard, CostGuardConfig};
-    use crate::agent::submission::{AuthGateResolution, Submission};
     use crate::channels::IncomingMessage;
     use crate::error::ChannelError;
-    use crate::hooks::HookRegistry;
-    use crate::tools::ToolRegistry;
-    use crate::{
-        config::{AgentConfig, SafetyConfig, SkillsConfig},
-        llm::{
-            CompletionRequest, CompletionResponse, FinishReason, LlmProvider,
-            ToolCompletionRequest, ToolCompletionResponse,
-        },
-    };
-    use ironclaw_safety::SafetyLayer;
-    use rust_decimal::Decimal;
-    use std::sync::Arc;
-    use std::time::Duration;
-    use uuid::Uuid;
-
-    struct StaticLlmProvider;
-
-    #[async_trait::async_trait]
-    impl LlmProvider for StaticLlmProvider {
-        fn model_name(&self) -> &str {
-            "static-mock"
-        }
-
-        fn cost_per_token(&self) -> (Decimal, Decimal) {
-            (Decimal::ZERO, Decimal::ZERO)
-        }
-
-        async fn complete(
-            &self,
-            _request: CompletionRequest,
-        ) -> Result<CompletionResponse, crate::error::LlmError> {
-            Ok(CompletionResponse {
-                content: "ok".to_string(),
-                input_tokens: 0,
-                output_tokens: 0,
-                finish_reason: FinishReason::Stop,
-                cache_read_input_tokens: 0,
-                cache_creation_input_tokens: 0,
-            })
-        }
-
-        async fn complete_with_tools(
-            &self,
-            _request: ToolCompletionRequest,
-        ) -> Result<ToolCompletionResponse, crate::error::LlmError> {
-            Ok(ToolCompletionResponse {
-                content: Some("ok".to_string()),
-                tool_calls: Vec::new(),
-                input_tokens: 0,
-                output_tokens: 0,
-                finish_reason: FinishReason::Stop,
-                cache_read_input_tokens: 0,
-                cache_creation_input_tokens: 0,
-            })
-        }
-    }
-
-    fn make_legacy_handle_message_test_agent() -> Agent {
-        let deps = AgentDeps {
-            owner_id: "default".to_string(),
-            store: None,
-            settings_store: None,
-            llm: Arc::new(StaticLlmProvider),
-            cheap_llm: None,
-            safety: Arc::new(SafetyLayer::new(&SafetyConfig {
-                max_output_length: 100_000,
-                injection_check_enabled: true,
-            })),
-            tools: Arc::new(ToolRegistry::new()),
-            workspace: None,
-            extension_manager: None,
-            skill_registry: None,
-            skill_catalog: None,
-            skills_config: SkillsConfig::default(),
-            hooks: Arc::new(HookRegistry::new()),
-            auth_manager: None,
-            cost_guard: Arc::new(CostGuard::new(CostGuardConfig::default())),
-            sse_tx: None,
-            http_interceptor: None,
-            transcription: None,
-            document_extraction: None,
-            sandbox_readiness: crate::agent::routine_engine::SandboxReadiness::DisabledByConfig,
-            builder: None,
-            llm_backend: "nearai".to_string(),
-            tenant_rates: Arc::new(crate::tenant::TenantRateRegistry::new(4, 3)),
-        };
-
-        Agent::new(
-            AgentConfig {
-                name: "agent-loop-test-agent".to_string(),
-                max_parallel_jobs: 1,
-                job_timeout: Duration::from_secs(60),
-                stuck_threshold: Duration::from_secs(60),
-                repair_check_interval: Duration::from_secs(30),
-                max_repair_attempts: 1,
-                use_planning: false,
-                session_idle_timeout: Duration::from_secs(300),
-                allow_local_tools: false,
-                max_cost_per_day_cents: None,
-                max_actions_per_hour: None,
-                max_cost_per_user_per_day_cents: None,
-                max_tool_iterations: 50,
-                auto_approve_tools: false,
-                default_timezone: "UTC".to_string(),
-                max_jobs_per_user: None,
-                max_tokens_per_job: 0,
-                multi_tenant: false,
-                max_llm_concurrent_per_user: None,
-                max_jobs_concurrent_per_user: None,
-                engine_v2: false,
-            },
-            deps,
-            Arc::new(crate::channels::ChannelManager::new()),
-            None,
-            None,
-            None,
-            Some(Arc::new(crate::context::ContextManager::new(1))),
-            None,
-        )
-    }
 
     #[test]
     fn test_truncate_short_input() {
@@ -2585,68 +2425,4 @@ mod tests {
         assert!(!is_single_message_repl(&plain_repl)); // safety: test-only assertion
     }
 
-    #[tokio::test]
-    async fn v2_only_structured_submissions_do_not_switch_threads_when_engine_v2_disabled() {
-        let agent = make_legacy_handle_message_test_agent();
-        let session = agent.session_manager.get_or_create_session("alice").await;
-        let active_thread_id = Uuid::new_v4();
-        let target_thread_id = Uuid::new_v4();
-
-        {
-            let mut sess = session.lock().await;
-            sess.create_thread_with_id(active_thread_id, Some("gateway"));
-            sess.create_thread_with_id(target_thread_id, Some("gateway"));
-            sess.active_thread = Some(active_thread_id);
-        }
-
-        agent
-            .session_manager
-            .register_thread("alice", "gateway", active_thread_id, Arc::clone(&session))
-            .await;
-        agent
-            .session_manager
-            .register_thread("alice", "gateway", target_thread_id, Arc::clone(&session))
-            .await;
-
-        let gate_resolution = serde_json::to_string(&Submission::GateAuthResolution {
-            request_id: Uuid::new_v4(),
-            resolution: AuthGateResolution::Cancelled,
-        })
-        .expect("serialize gate resolution");
-        let gate_message = IncomingMessage::new("gateway", "alice", &gate_resolution)
-            .with_thread(target_thread_id);
-
-        let outcome = agent
-            .handle_message(&gate_message)
-            .await
-            .expect("handle message");
-        assert!(matches!(
-            outcome,
-            HandleOutcome::Respond(ref msg) if msg == "Error: Auth gate resolution requires ENGINE_V2"
-        ));
-        {
-            let sess = session.lock().await;
-            assert_eq!(sess.active_thread, Some(active_thread_id));
-        }
-
-        let callback = serde_json::to_string(&Submission::ExternalCallback {
-            request_id: Uuid::new_v4(),
-        })
-        .expect("serialize external callback");
-        let callback_message =
-            IncomingMessage::new("gateway", "alice", &callback).with_thread(target_thread_id);
-
-        let outcome = agent
-            .handle_message(&callback_message)
-            .await
-            .expect("handle callback");
-        assert!(matches!(
-            outcome,
-            HandleOutcome::Respond(ref msg) if msg == "Error: External callbacks require ENGINE_V2"
-        ));
-        {
-            let sess = session.lock().await;
-            assert_eq!(sess.active_thread, Some(active_thread_id));
-        }
-    }
 }

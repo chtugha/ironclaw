@@ -19,11 +19,9 @@ use crate::tools::{ApprovalRequirement, ToolRegistry};
 /// session-scoped auto-approvals. The caller constructing [`GateContext`] is
 /// responsible for pre-populating that set from DB-persisted
 /// `PermissionState::AlwaysAllow` entries (via `effective_permission()`).
-/// The v1 dispatcher hydrates the set at `dispatcher.rs` turn start; v2
-/// consults persisted permissions via `EffectBridgeAdapter::auto_approved`.
+/// The engine consults persisted permissions via `EffectBridgeAdapter::auto_approved`.
 /// **Persistence** of "always approve" decisions is handled by
-/// `persist_always_allow()` in `bridge/router.rs` (v2) and
-/// `process_approval()` in `agent/thread_ops.rs` (v1).
+/// `persist_always_allow()` in `bridge/router.rs`.
 ///
 /// Priority: 100 (after rate limiting, after relay channel check).
 pub struct ApprovalGate {
@@ -269,9 +267,6 @@ impl ExecutionGate for RateLimitGate {
 }
 
 /// Gate that auto-denies approval-requiring tools on relay channels.
-///
-/// Fixes v1/v2 inconsistency where relay channels auto-deny was only
-/// in v1 dispatcher but not in v2 router.
 ///
 /// Priority: 80 (before approval — no point showing approval UI on channels
 /// that can't respond interactively).

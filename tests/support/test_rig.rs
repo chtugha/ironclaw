@@ -739,7 +739,6 @@ pub struct TestRigBuilder {
     test_tool_overrides: Vec<Arc<dyn Tool>>,
     wasm_tools: Vec<WasmToolSpec>,
     keep_bootstrap: bool,
-    engine_v2: bool,
     channel_name_override: Option<String>,
     seeded_secrets: Option<SeededSecretsConfig>,
     /// Pre-seed the SecretsStore with `(name, value)` pairs before the
@@ -768,7 +767,6 @@ impl TestRigBuilder {
             test_tool_overrides: Vec::new(),
             wasm_tools: Vec::new(),
             keep_bootstrap: false,
-            engine_v2: false,
             channel_name_override: None,
             seeded_secrets: None,
             pre_seed_secrets: Vec::new(),
@@ -869,7 +867,7 @@ impl TestRigBuilder {
     ///
     /// When set, uses this config instead of `Config::for_testing()`.
     /// The database path is still overridden to use a temp libSQL file,
-    /// but agent settings (`allow_local_tools`, `engine_v2`, etc.) are
+    /// but agent settings (`allow_local_tools`, etc.) are
     /// preserved from the provided config. Post-build forcing of
     /// `allow_local_tools = true` is skipped so the test matches the
     /// real binary's tool availability.
@@ -947,9 +945,9 @@ impl TestRigBuilder {
         self
     }
 
-    /// Route messages through the engine v2 pipeline instead of the v1 agentic loop.
-    pub fn with_engine_v2(mut self) -> Self {
-        self.engine_v2 = true;
+    /// No-op — engine v2 is now the only execution path.
+    /// Retained for backward compatibility with existing test call sites.
+    pub fn with_engine_v2(self) -> Self {
         self
     }
 
@@ -1001,7 +999,6 @@ impl TestRigBuilder {
             test_tool_overrides,
             wasm_tools,
             keep_bootstrap,
-            engine_v2,
             channel_name_override,
             seeded_secrets,
             pre_seed_secrets,
@@ -1160,21 +1157,12 @@ impl TestRigBuilder {
             if let Some(v) = auto_approve_tools {
                 components.config.agent.auto_approve_tools = v;
             }
-            // allow_local_tools comes from the provided config.
-            // engine_v2: honour the builder's explicit override if set.
-            if engine_v2 {
-                components.config.agent.engine_v2 = true;
-            }
         } else {
             components.config.agent.auto_approve_tools = auto_approve_tools.unwrap_or(true);
             components.config.agent.allow_local_tools = true;
-            components.config.agent.engine_v2 = engine_v2;
         }
 
-        // Reset engine v2 global state so each test gets a clean engine instance.
-        if components.config.agent.engine_v2 {
-            ironclaw::bridge::reset_engine_state().await;
-        }
+        ironclaw::bridge::reset_engine_state().await;
 
         let scheduler_slot: ironclaw::tools::builtin::SchedulerSlot =
             Arc::new(tokio::sync::RwLock::new(None));

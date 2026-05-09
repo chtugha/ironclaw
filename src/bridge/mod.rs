@@ -1,8 +1,7 @@
 //! Engine v2 bridge — connects `ironclaw_engine` to existing infrastructure.
 //!
-//! Strategy C: parallel deployment. When `ENGINE_V2=true`, user messages
-//! route through the engine instead of the existing agentic loop. All
-//! existing behavior is unchanged when the flag is off.
+//! Engine routing layer. User messages route through the engine executor
+//! (loop_engine) via bridge handlers.
 
 mod action_discovery;
 mod action_projector;
@@ -63,7 +62,6 @@ pub use router::{
     has_pending_auth,
     // Initialization
     init_engine,
-    is_engine_v2_enabled,
     list_engine_missions,
     list_engine_projects,
     list_engine_thread_events,
