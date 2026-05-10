@@ -8,7 +8,7 @@
 //! registry/
 //! ├── tools/          <- One JSON manifest per tool
 //! ├── channels/       <- One JSON manifest per channel
-//! └── _bundles.json   <- Bundle definitions (home, google, messaging)
+//! └── _bundles.json   <- Bundle definitions (home, messaging)
 //! ```
 
 pub mod artifacts;

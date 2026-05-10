@@ -25,13 +25,13 @@ pub enum RegistryCommand {
 
     /// Show detailed information about an extension or bundle
     Info {
-        /// Extension or bundle name (e.g. "slack", "google", "tools/gmail")
+        /// Extension or bundle name (e.g. "slack", "home", "tools/github")
         name: String,
     },
 
     /// Install an extension or bundle from the registry
     Install {
-        /// Extension or bundle name (e.g. "slack", "google", "home")
+        /// Extension or bundle name (e.g. "slack", "home", "tools/github")
         name: String,
 
         /// Force overwrite if already installed
