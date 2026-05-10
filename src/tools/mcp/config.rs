@@ -448,7 +448,7 @@ impl From<ConfigError> for ToolError {
     }
 }
 
-/// MCP server id (`registry/mcp-servers/nearai.json` → `name`, or this if the catalog is empty).
+/// MCP server id used when the NEAR AI MCP server is bootstrapped from environment variables.
 pub const NEARAI_MCP_SERVER_NAME: &str = "nearai";
 
 const NEARAI_MCP_REGISTRY_KEY: &str = "mcp-servers/nearai";

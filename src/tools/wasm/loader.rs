@@ -520,7 +520,7 @@ pub fn resolve_wasm_target_dir(crate_dir: &Path) -> PathBuf {
 /// Return the expected path to a compiled WASM artifact for a given crate.
 ///
 /// Combines [`resolve_wasm_target_dir`] with the `wasm32-wasip2/release/` subdirectory
-/// and the binary name without extension (e.g. `slack_tool`).
+/// and the binary name without extension (e.g. `github_tool`).
 ///
 /// `binary_name` should not include the `.wasm` extension; it is appended automatically.
 ///
@@ -551,7 +551,7 @@ fn tools_src_dir() -> PathBuf {
 /// - `tools-src/<name>/target/wasm32-wasip2/release/<crate_name>_tool.wasm`
 /// - `tools-src/<name>/<name>-tool.capabilities.json`
 ///
-/// Returns a map of install-name (e.g. "gmail_tool") to paths.
+/// Returns a map of install-name (e.g. "github_tool") to paths.
 pub async fn discover_dev_tools() -> Result<HashMap<String, DiscoveredTool>, std::io::Error> {
     let src_dir = tools_src_dir();
     let mut tools = HashMap::new();
