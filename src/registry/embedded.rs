@@ -96,8 +96,8 @@ mod tests {
     fn test_load_embedded_bundles_parses() {
         let bundles = load_embedded_bundles();
         assert!(
-            bundles.is_empty() || bundles.contains_key("default"),
-            "Expected either empty bundles or 'default' bundle"
+            bundles.is_empty() || bundles.contains_key("home"),
+            "Expected either empty bundles or 'home' bundle"
         );
     }
 }

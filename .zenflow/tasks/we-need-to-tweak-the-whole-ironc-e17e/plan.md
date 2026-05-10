@@ -130,7 +130,8 @@ Changes:
 
 Verification: `cargo check --workspace` must compile with no reference to `SkillCatalog` or `catalog.rs`.
 
-### [ ] Step 4: Remove online-only registry entries and update bundle
+### [x] Step 4: Remove online-only registry entries and update bundle
+<!-- chat-id: 1b0c0003-3076-464d-bd0e-76e7b59c63d5 -->
 
 Remove online-only tool and MCP-server registry JSON files, and update `_bundles.json` as described in spec.md §2.1 (stage 4).
 

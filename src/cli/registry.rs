@@ -14,7 +14,7 @@ pub enum RegistryCommand {
         #[arg(short, long)]
         kind: Option<String>,
 
-        /// Filter by tag (e.g. "default", "google", "messaging")
+        /// Filter by tag (e.g. "home", "local", "messaging")
         #[arg(short, long)]
         tag: Option<String>,
 
@@ -31,7 +31,7 @@ pub enum RegistryCommand {
 
     /// Install an extension or bundle from the registry
     Install {
-        /// Extension or bundle name (e.g. "slack", "google", "default")
+        /// Extension or bundle name (e.g. "slack", "google", "home")
         name: String,
 
         /// Force overwrite if already installed
@@ -43,7 +43,7 @@ pub enum RegistryCommand {
         build: bool,
     },
 
-    /// Install the default bundle of recommended extensions
+    /// Install the home bundle of recommended local extensions
     InstallDefaults {
         /// Force overwrite if already installed
         #[arg(short, long)]
@@ -81,7 +81,7 @@ pub async fn run_registry_command(cmd: RegistryCommand) -> anyhow::Result<()> {
             cmd_install(&catalog, &repo_root, &name, force, build).await
         }
         RegistryCommand::InstallDefaults { force, build } => {
-            cmd_install(&catalog, &repo_root, "default", force, build).await
+            cmd_install(&catalog, &repo_root, "home", force, build).await
         }
     }
 }
