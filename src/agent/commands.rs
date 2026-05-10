@@ -18,6 +18,7 @@ use crate::llm::{ChatMessage, Reasoning};
 use crate::ownership::Owned;
 
 /// Format a count with a suffix, using K/M abbreviations for large numbers.
+#[allow(dead_code)]
 fn format_count(n: u64, suffix: &str) -> String {
     if n >= 1_000_000 {
         format!("{:.1}M {}", n as f64 / 1_000_000.0, suffix)
@@ -485,114 +486,6 @@ impl Agent {
         }
     }
 
-    /// Handle `/expected <description>` — capture expected behavior and fire into
-    /// the self-improvement pipeline.
-    ///
-    /// Collects recent conversation turns (user input, tool calls, responses) and
-    /// packages them with the user's description of what should have happened.
-    /// This fires a `user_feedback:expected_behavior` system event that the
-    /// expected-behavior learning mission picks up.
-    pub(super) async fn process_expected(
-        &self,
-        session: Arc<Mutex<Session>>,
-        thread_id: Uuid,
-        description: &str,
-        user_id: &str,
-    ) -> Result<SubmissionResult, Error> {
-        // Extract recent turns from the session (last 5 turns for context)
-        let recent_context = {
-            let sess = session.lock().await;
-            let thread = sess
-                .threads
-                .get(&thread_id)
-                .ok_or_else(|| Error::from(crate::error::JobError::NotFound { id: thread_id }))?;
-
-            let turns: Vec<serde_json::Value> = thread
-                .turns
-                .iter()
-                .rev()
-                .take(5)
-                .collect::<Vec<_>>()
-                .into_iter()
-                .rev()
-                .map(|turn| {
-                    let tool_calls: Vec<serde_json::Value> = turn
-                        .tool_calls
-                        .iter()
-                        .map(|tc| {
-                            serde_json::json!({
-                                "tool": tc.name,
-                                "error": tc.error,
-                            })
-                        })
-                        .collect();
-                    serde_json::json!({
-                        "user_input": turn.user_input,
-                        "response": turn.response,
-                        "tool_calls": tool_calls,
-                        "state": format!("{:?}", turn.state),
-                        "error": turn.error,
-                    })
-                })
-                .collect();
-            turns
-        };
-
-        if recent_context.is_empty() {
-            return Ok(SubmissionResult::ok_with_message(
-                "No conversation history to attach feedback to.",
-            ));
-        }
-
-        let payload = serde_json::json!({
-            "expected_behavior": description,
-            "thread_id": thread_id.to_string(),
-            "recent_turns": recent_context,
-        });
-
-        // Fire into v2 mission manager (learning missions)
-        let mut fired: usize = 0;
-        if let Some(mgr) = self.mission_manager().await {
-            match mgr
-                .fire_on_system_event(
-                    "user_feedback",
-                    "expected_behavior",
-                    user_id,
-                    Some(payload.clone()),
-                )
-                .await
-            {
-                Ok(ids) => fired += ids.len(),
-                Err(e) => {
-                    tracing::debug!("failed to fire expected-behavior mission: {e}");
-                }
-            }
-        }
-
-        // Also fire through v1 routine engine (if routines listen for this)
-        if let Some(engine) = self.routine_engine().await {
-            fired += engine
-                .emit_system_event(
-                    "user_feedback",
-                    "expected_behavior",
-                    &payload,
-                    Some(user_id),
-                )
-                .await;
-        }
-
-        if fired > 0 {
-            Ok(SubmissionResult::ok_with_message(format!(
-                "Feedback captured. Fired {fired} self-improvement thread(s) to investigate."
-            )))
-        } else {
-            Ok(SubmissionResult::ok_with_message(
-                "Feedback noted but no self-improvement missions are configured to handle it. \
-                 The engine will use this context in future learning cycles.",
-            ))
-        }
-    }
-
     /// Handle `/reasoning [N|all]` — show reasoning history for the active thread.
     pub(super) async fn handle_reasoning_command(
         &self,
@@ -966,65 +859,14 @@ impl Agent {
         Ok(SubmissionResult::response(out))
     }
 
-    /// Search ClawHub for skills.
+    /// Search installed skills locally.
     async fn handle_skills_search(&self, query: &str) -> Result<SubmissionResult, Error> {
-        let catalog = match self.skill_catalog() {
-            Some(c) => c,
-            None => {
-                return Ok(SubmissionResult::error("Skill catalog not available."));
-            }
-        };
+        let query_lower = query.to_lowercase();
+        let mut out = format!("Installed skills matching \"{}\":\n\n", query);
 
-        let outcome = catalog.search(query).await;
-
-        // Enrich top results with detail data (stars, downloads, owner)
-        let mut entries = outcome.results;
-        catalog.enrich_search_results(&mut entries, 5).await;
-
-        let mut out = format!("ClawHub results for \"{}\":\n\n", query);
-
-        if entries.is_empty() {
-            if let Some(ref err) = outcome.error {
-                out.push_str(&format!("  (registry error: {})\n", err));
-            } else {
-                out.push_str("  No results found.\n");
-            }
-        } else {
-            for entry in &entries {
-                let owner_str = entry
-                    .owner
-                    .as_deref()
-                    .map(|o| format!("  by {}", o))
-                    .unwrap_or_default();
-
-                let stats_parts: Vec<String> = [
-                    entry.stars.map(|s| format!("{} stars", s)),
-                    entry.downloads.map(|d| format_count(d, "downloads")),
-                ]
-                .into_iter()
-                .flatten()
-                .collect();
-                let stats_str = if stats_parts.is_empty() {
-                    String::new()
-                } else {
-                    format!("  {}", stats_parts.join("  "))
-                };
-
-                out.push_str(&format!(
-                    "  {:<24} v{:<10}{}{}\n",
-                    entry.name, entry.version, owner_str, stats_str,
-                ));
-                if !entry.description.is_empty() {
-                    out.push_str(&format!("    {}\n\n", entry.description));
-                }
-            }
-        }
-
-        // Show matching installed skills
         if let Some(registry) = self.skill_registry()
             && let Ok(guard) = registry.read()
         {
-            let query_lower = query.to_lowercase();
             let matches: Vec<_> = guard
                 .skills()
                 .iter()
@@ -1034,8 +876,9 @@ impl Agent {
                 })
                 .collect();
 
-            if !matches.is_empty() {
-                out.push_str(&format!("Installed skills matching \"{}\":\n", query));
+            if matches.is_empty() {
+                out.push_str("  No installed skills match that query.\n");
+            } else {
                 for s in &matches {
                     out.push_str(&format!(
                         "  {:<24} v{:<10} [{}]\n",
@@ -1043,6 +886,8 @@ impl Agent {
                     ));
                 }
             }
+        } else {
+            out.push_str("  Skills system not available.\n");
         }
 
         Ok(SubmissionResult::response(out))

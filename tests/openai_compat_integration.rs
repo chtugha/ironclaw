@@ -216,7 +216,6 @@ async fn start_test_server_with_provider(
         llm_session_manager: None,
         config_toml_path: None,
         skill_registry: None,
-        skill_catalog: None,
         auth_manager: None,
         chat_rate_limiter: ironclaw::channels::web::platform::state::PerUserRateLimiter::new(
             30, 60,
@@ -739,7 +738,6 @@ async fn test_no_llm_provider_returns_503() {
         llm_session_manager: None,
         config_toml_path: None,
         skill_registry: None,
-        skill_catalog: None,
         auth_manager: None,
         chat_rate_limiter: ironclaw::channels::web::platform::state::PerUserRateLimiter::new(
             30, 60,

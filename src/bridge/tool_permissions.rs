@@ -29,7 +29,7 @@ impl ToolPermissionSnapshot {
                 tracing::warn!(
                     user_id,
                     error = %error,
-                    "Failed to load tool permissions for engine v2"
+                    "Failed to load tool permissions"
                 );
                 Self::default()
             }

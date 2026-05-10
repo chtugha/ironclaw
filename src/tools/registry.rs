@@ -20,9 +20,9 @@ use crate::tools::builtin::{
     GlobTool, GrepTool, HttpTool, JobEventsTool, JobPromptTool, JobStatusTool, JsonTool,
     ListDirTool, ListJobsTool, MemoryReadTool, MemorySearchTool, MemoryTreeTool, MemoryWriteTool,
     PlanUpdateTool, PromptQueue, ReadFileTool, ShellTool, SkillInstallTool, SkillListTool,
-    SkillRemoveTool, SkillSearchTool, TimeTool, ToolActivateTool, ToolAuthTool, ToolInstallTool,
-    ToolListTool, ToolPermissionSetTool, ToolRemoveTool, ToolSearchTool, ToolUpgradeTool,
-    WriteFileTool, shared_file_history, shared_read_file_state,
+    SkillRemoveTool, TimeTool, ToolActivateTool, ToolAuthTool, ToolInstallTool, ToolListTool,
+    ToolPermissionSetTool, ToolRemoveTool, ToolSearchTool, ToolUpgradeTool, WriteFileTool,
+    shared_file_history, shared_read_file_state,
 };
 use crate::tools::rate_limiter::RateLimiter;
 use crate::tools::tool::{
@@ -33,7 +33,6 @@ use crate::tools::wasm::{
     WasmStorageError, WasmToolRuntime, WasmToolStore, WasmToolWrapper,
 };
 use crate::workspace::Workspace;
-use ironclaw_skills::catalog::SkillCatalog;
 use ironclaw_skills::registry::SkillRegistry;
 
 /// Names of built-in tools that cannot be shadowed by dynamic registrations
@@ -753,22 +752,11 @@ impl ToolRegistry {
     /// Register skill management tools (list, search, install, remove).
     ///
     /// These allow the LLM to manage prompt-level skills through conversation.
-    pub fn register_skill_tools(
-        &self,
-        registry: Arc<std::sync::RwLock<SkillRegistry>>,
-        catalog: Arc<SkillCatalog>,
-    ) {
+    pub fn register_skill_tools(&self, registry: Arc<std::sync::RwLock<SkillRegistry>>) {
         self.register_sync(Arc::new(SkillListTool::new(Arc::clone(&registry))));
-        self.register_sync(Arc::new(SkillSearchTool::new(
-            Arc::clone(&registry),
-            Arc::clone(&catalog),
-        )));
-        self.register_sync(Arc::new(SkillInstallTool::new(
-            Arc::clone(&registry),
-            Arc::clone(&catalog),
-        )));
+        self.register_sync(Arc::new(SkillInstallTool::new(Arc::clone(&registry))));
         self.register_sync(Arc::new(SkillRemoveTool::new(registry)));
-        tracing::debug!("Registered 4 skill management tools");
+        tracing::debug!("Registered 3 skill management tools");
     }
 
     /// Register routine management tools.

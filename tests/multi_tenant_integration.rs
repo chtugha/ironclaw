@@ -555,7 +555,6 @@ fn gateway_state_has_multi_tenant_fields() {
         llm_session_manager: None,
         config_toml_path: None,
         skill_registry: None,
-        skill_catalog: None,
         auth_manager: None,
         chat_rate_limiter: PerUserRateLimiter::new(30, 60), // Multi-tenant: per-user
         oauth_rate_limiter: PerUserRateLimiter::new(20, 60),
@@ -648,7 +647,6 @@ async fn start_owner_scoped_sender_server() -> (
         llm_session_manager: None,
         config_toml_path: None,
         skill_registry: None,
-        skill_catalog: None,
         auth_manager: None,
         chat_rate_limiter: PerUserRateLimiter::new(30, 60),
         oauth_rate_limiter: PerUserRateLimiter::new(20, 60),
@@ -1130,7 +1128,6 @@ async fn start_multi_user_server_with_db() -> (
         llm_session_manager: None,
         config_toml_path: None,
         skill_registry: None,
-        skill_catalog: None,
         auth_manager: None,
         chat_rate_limiter: PerUserRateLimiter::new(30, 60),
         oauth_rate_limiter: PerUserRateLimiter::new(20, 60),

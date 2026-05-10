@@ -43,8 +43,6 @@ pub mod types;
 pub mod v2;
 pub mod validation;
 
-#[cfg(feature = "catalog")]
-pub mod catalog;
 #[cfg(feature = "registry")]
 pub mod registry;
 
@@ -65,10 +63,5 @@ pub use validation::{
     validate_credential_spec, validate_path_pattern, validate_skill_name,
 };
 
-#[cfg(feature = "catalog")]
-pub use catalog::{
-    CatalogEntry, CatalogResolveError, CatalogSearchOutcome, SkillCatalog,
-    catalog_entry_is_installed, resolve_catalog_slug_for_name, shared_catalog,
-};
 #[cfg(feature = "registry")]
 pub use registry::{SkillRegistry, SkillRegistryError, compute_hash};

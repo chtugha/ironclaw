@@ -238,28 +238,6 @@ async fn async_main() -> anyhow::Result<()> {
             init_worker_tracing();
             return ironclaw::worker::run_worker(*job_id, orchestrator_url, *max_iterations).await;
         }
-        Some(Command::ClaudeBridge {
-            job_id,
-            orchestrator_url,
-            max_turns,
-            model,
-        }) => {
-            init_worker_tracing();
-            return ironclaw::worker::run_claude_bridge(
-                *job_id,
-                orchestrator_url,
-                *max_turns,
-                model,
-            )
-            .await;
-        }
-        Some(Command::AcpBridge {
-            job_id,
-            orchestrator_url,
-        }) => {
-            init_worker_tracing();
-            return ironclaw::worker::run_acp_bridge(*job_id, orchestrator_url).await;
-        }
         Some(Command::Login { openai_codex }) => {
             init_cli_tracing();
             if *openai_codex {
@@ -948,9 +926,6 @@ async fn async_main() -> anyhow::Result<()> {
         if let Some(ref sr) = components.skill_registry {
             gw = gw.with_skill_registry(Arc::clone(sr));
         }
-        if let Some(ref sc) = components.skill_catalog {
-            gw = gw.with_skill_catalog(Arc::clone(sc));
-        }
         gw = gw.with_cost_guard(Arc::clone(&components.cost_guard));
         gw = gw.with_oauth(config.oauth.clone(), gw_config.port);
         {
@@ -1250,7 +1225,6 @@ async fn async_main() -> anyhow::Result<()> {
         workspace: components.workspace,
         extension_manager: components.extension_manager,
         skill_registry: components.skill_registry,
-        skill_catalog: components.skill_catalog,
         skills_config: config.skills.clone(),
         hooks: components.hooks,
         auth_manager,

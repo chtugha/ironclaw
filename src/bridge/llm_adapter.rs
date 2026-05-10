@@ -20,9 +20,9 @@ const EMPTY_CLEANED_RESPONSE_FALLBACK: &str = "I'm not sure how to respond to th
 
 /// Compute the USD cost of a single completion response, honoring the
 /// provider's prompt-caching pricing. Mirrors the formula in
-/// `src/agent/cost_guard.rs::CostGuard::record_llm_call` so engine v2's
-/// `Thread::total_cost_usd` matches what `max_budget_usd` / v1's daily
-/// budget enforcer would have computed:
+/// `src/agent/cost_guard.rs::CostGuard::record_llm_call` so the engine's
+/// `Thread::total_cost_usd` matches what `max_budget_usd` would have
+/// computed:
 ///
 /// * uncached input tokens are priced at `cost_per_token().0`;
 /// * cache-read tokens are discounted by `cache_read_discount()` (10x

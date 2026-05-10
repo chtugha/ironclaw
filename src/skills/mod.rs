@@ -12,10 +12,6 @@
 pub mod attenuation;
 pub mod bundled;
 
-// Items from `ironclaw_skills` are no longer glob-re-exported.
-// Callers should import from `ironclaw_skills` directly.
-
-// Re-export attenuation at the same path as before.
 pub use attenuation::{AttenuationResult, attenuate_tools};
 
 use crate::secrets::{CredentialLocation, CredentialMapping};

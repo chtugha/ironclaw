@@ -52,8 +52,6 @@ pub mod context;
 pub mod db;
 pub mod document_extraction;
 pub mod error;
-pub mod estimation;
-pub mod evaluation;
 pub mod extensions;
 pub mod gate;
 pub(crate) mod generated_images;
@@ -96,7 +94,6 @@ pub use error::{Error, Result};
 pub mod prelude {
     pub use crate::channels::{Channel, IncomingMessage, MessageStream};
     pub use crate::config::Config;
-    pub use crate::context::{JobContext, JobState};
     pub use crate::error::{Error, Result};
     pub use crate::llm::LlmProvider;
     pub use crate::tools::{Tool, ToolOutput, ToolRegistry};

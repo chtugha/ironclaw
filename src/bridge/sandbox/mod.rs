@@ -1,4 +1,4 @@
-//! Engine v2 per-project sandbox bridge.
+//! Per-project sandbox bridge.
 //!
 //! This submodule is the **host-side glue** between [`EffectBridgeAdapter`]
 //! and the engine's [`WorkspaceMounts`] abstraction. It is the place where
@@ -40,10 +40,8 @@ pub mod workspace_path;
 
 /// Returns whether the per-project sandbox is enabled.
 ///
-/// Reads `SANDBOX_ENABLED` — the same env var that governs the v1
-/// container sandbox. A single flag controls sandboxing for both engine
-/// versions.
-pub fn engine_v2_sandbox_enabled() -> bool {
+/// Reads the `SANDBOX_ENABLED` environment variable.
+pub fn is_sandbox_enabled() -> bool {
     is_truthy(std::env::var("SANDBOX_ENABLED").ok().as_deref())
 }
 

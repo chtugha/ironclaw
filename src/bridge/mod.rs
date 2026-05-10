@@ -1,4 +1,4 @@
-//! Engine v2 bridge — connects `ironclaw_engine` to existing infrastructure.
+//! Engine bridge — connects `ironclaw_engine` to existing infrastructure.
 //!
 //! Engine routing layer. User messages route through the engine executor
 //! (loop_engine) via bridge handlers.

@@ -55,10 +55,9 @@ pub(crate) enum HandleOutcome {
 }
 
 impl HandleOutcome {
-    /// Convert a legacy `Option<String>` return into a [`HandleOutcome`].
+    /// Convert an `Option<String>` result into a [`HandleOutcome`].
     ///
     /// `None` → `Shutdown`, empty string → `NoResponse`, otherwise `Respond`.
-    /// Used to wrap v1 handlers that return `Option<String>`.
     fn from_legacy(opt: Option<String>) -> Self {
         match opt {
             None => HandleOutcome::Shutdown,
@@ -110,6 +109,7 @@ pub(crate) fn truncate_for_preview(output: &str, max_chars: usize) -> String {
 /// Returns `true` when the message should be routed as an approval (there IS
 /// a pending approval or it's an explicit slash command). Returns `false`
 /// when the message should be treated as regular `UserInput`.
+#[cfg(test)]
 fn should_route_as_approval(thread_state: ThreadState, raw_content: &str) -> bool {
     thread_state == ThreadState::AwaitingApproval || raw_content.trim().starts_with('/')
 }
@@ -216,7 +216,6 @@ pub struct AgentDeps {
     pub workspace: Option<Arc<Workspace>>,
     pub extension_manager: Option<Arc<ExtensionManager>>,
     pub skill_registry: Option<Arc<std::sync::RwLock<SkillRegistry>>>,
-    pub skill_catalog: Option<Arc<ironclaw_skills::catalog::SkillCatalog>>,
     pub skills_config: SkillsConfig,
     pub hooks: Arc<HookRegistry>,
     pub auth_manager: Option<Arc<crate::auth::extension::AuthManager>>,
@@ -258,9 +257,6 @@ pub struct Agent {
     /// the engine to gateway/manual trigger entry points.
     pub(super) routine_engine_slot:
         Arc<tokio::sync::RwLock<Option<Arc<crate::agent::routine_engine::RoutineEngine>>>>,
-    /// Engine v2 mission manager for firing learning missions (set after engine init).
-    pub(crate) mission_manager_slot:
-        Arc<tokio::sync::RwLock<Option<Arc<ironclaw_engine::MissionManager>>>>,
 }
 
 impl Agent {
@@ -332,7 +328,6 @@ impl Agent {
             hygiene_config,
             routine_config,
             routine_engine_slot: Arc::new(tokio::sync::RwLock::new(None)),
-            mission_manager_slot: Arc::new(tokio::sync::RwLock::new(None)),
         }
     }
 
@@ -343,21 +338,6 @@ impl Agent {
         slot: Arc<tokio::sync::RwLock<Option<Arc<crate::agent::routine_engine::RoutineEngine>>>>,
     ) {
         self.routine_engine_slot = slot;
-    }
-
-    pub(super) async fn routine_engine(
-        &self,
-    ) -> Option<Arc<crate::agent::routine_engine::RoutineEngine>> {
-        self.routine_engine_slot.read().await.clone()
-    }
-
-    /// Set the engine v2 mission manager (called after engine init).
-    pub async fn set_mission_manager(&self, mgr: Arc<ironclaw_engine::MissionManager>) {
-        *self.mission_manager_slot.write().await = Some(mgr);
-    }
-
-    pub(crate) async fn mission_manager(&self) -> Option<Arc<ironclaw_engine::MissionManager>> {
-        self.mission_manager_slot.read().await.clone()
     }
 
     // Convenience accessors
@@ -545,10 +525,6 @@ impl Agent {
 
     pub(super) fn skill_registry(&self) -> Option<&Arc<std::sync::RwLock<SkillRegistry>>> {
         self.deps.skill_registry.as_ref()
-    }
-
-    pub(super) fn skill_catalog(&self) -> Option<&Arc<ironclaw_skills::catalog::SkillCatalog>> {
-        self.deps.skill_catalog.as_ref()
     }
 
     /// Select active skills for a message using deterministic prefiltering.
@@ -1102,12 +1078,6 @@ impl Agent {
                         std::time::Duration::from_secs(rt_config.cron_check_interval_secs);
                     let cron_handle = spawn_cron_ticker(Arc::clone(&engine), cron_interval);
 
-                    // Store engine reference for event trigger checking
-                    // Safety: we're in run() which takes self, no other reference exists
-                    let engine_ref = Arc::clone(&engine);
-                    // SAFETY: self is consumed by run(), we can smuggle the engine in
-                    // via a local to use in the message loop below.
-
                     // Expose engine to gateway for manual triggering
                     *self.routine_engine_slot.write().await = Some(Arc::clone(&engine));
 
@@ -1117,7 +1087,7 @@ impl Agent {
                         rt_config.max_concurrent_routines
                     );
 
-                    Some((cron_handle, engine_ref))
+                    Some(cron_handle)
                 } else {
                     tracing::warn!("Routines enabled but store/workspace not available");
                     None
@@ -1291,7 +1261,7 @@ impl Agent {
         if let Some(handle) = heartbeat_handle {
             handle.abort();
         }
-        if let Some((cron_handle, _)) = routine_handle {
+        if let Some(cron_handle) = routine_handle {
             cron_handle.abort();
         }
         self.scheduler.stop_all().await;
@@ -1658,9 +1628,10 @@ impl Agent {
             "Resolved session and thread"
         );
 
-        // Auth mode interception: if the thread is awaiting a token, route
-        // the message directly to the credential store. Nothing touches
-        // logs, turns, history, or compaction.
+        // Session-level auth mode: if a legacy credential flow left the thread
+        // in auth mode, clear it on any control submission that reaches here.
+        // `UserInput` is handled exclusively by the engine bridge (early return
+        // above) and never reaches this point.
         let pending_auth = {
             let sess = session.lock().await;
             sess.threads
@@ -1670,78 +1641,16 @@ impl Agent {
 
         if let Some(pending) = pending_auth {
             if pending.is_expired() {
-                // TTL exceeded — clear stale auth mode
                 tracing::warn!(
                     extension = %pending.extension_name,
                     "Auth mode expired after TTL, clearing"
                 );
-                {
-                    let mut sess = session.lock().await;
-                    if let Some(thread) = sess.threads.get_mut(&thread_id) {
-                        thread.pending_auth = None;
-                    }
-                }
-                // If this was a user message (possibly a pasted token), return an
-                // explicit error instead of forwarding it to the LLM/history.
-                if matches!(submission, Submission::UserInput { .. }) {
-                    return Ok(HandleOutcome::Respond(format!(
-                        "Authentication for **{}** expired. Please try again.",
-                        pending.extension_name
-                    )));
-                }
-                // Control submissions (interrupt, undo, etc.) fall through to normal handling
-            } else {
-                match &submission {
-                    Submission::UserInput { content } => {
-                        return self
-                            .process_auth_token(message, &pending, content, session, thread_id)
-                            .await
-                            .map(HandleOutcome::from_legacy);
-                    }
-                    _ => {
-                        // Any control submission (interrupt, undo, etc.) cancels auth mode
-                        let mut sess = session.lock().await;
-                        if let Some(thread) = sess.threads.get_mut(&thread_id) {
-                            thread.pending_auth = None;
-                        }
-                        // Fall through to normal handling
-                    }
-                }
             }
-        }
-
-        tracing::trace!(
-            "Received message from {} on {} ({} chars)",
-            message.user_id,
-            message.channel,
-            message.content.len()
-        );
-
-        if !message.is_internal
-            && let Submission::UserInput { ref content } = submission
-            && let Some(engine) = self.routine_engine().await
-        {
-            let single_message_repl = is_single_message_repl(message);
-            // Use post-hook content so that BeforeInbound hooks that rewrite
-            // input are respected by event trigger matching.
-            let fired = if single_message_repl {
-                engine.check_event_triggers_and_wait(message, content).await
-            } else {
-                engine.check_event_triggers(message, content).await
-            };
-            if fired > 0 {
-                tracing::debug!(
-                    channel = %message.channel,
-                    user = %message.user_id,
-                    fired,
-                    "Consumed inbound user message with matching event-triggered routine(s)"
-                );
-                return if single_message_repl {
-                    Ok(HandleOutcome::Shutdown)
-                } else {
-                    Ok(HandleOutcome::NoResponse)
-                };
+            let mut sess = session.lock().await;
+            if let Some(thread) = sess.threads.get_mut(&thread_id) {
+                thread.pending_auth = None;
             }
+            // Fall through to normal handling for control submissions
         }
 
         // Build per-tenant execution context once; threaded through all handlers.
@@ -1751,104 +1660,16 @@ impl Agent {
 
         // Process based on submission type
         let result = match submission {
-            Submission::UserInput { content } => {
-                let mut result = self
-                    .process_user_input(
-                        message,
-                        tenant.clone(),
-                        session.clone(),
-                        thread_id,
-                        &content,
-                    )
-                    .await;
-
-                // Drain any messages queued during processing.
-                // Messages are merged (newline-separated) so the LLM receives
-                // full context from rapid consecutive inputs instead of
-                // processing each as a separate turn with partial context (#259).
-                //
-                // Only `Response` continues the drain — the user got a normal
-                // reply and there may be more queued messages to process.
-                //
-                // Everything else stops the loop:
-                // - `NeedApproval`: thread is blocked on user approval
-                // - `Interrupted`: turn was cancelled
-                // - `Ok`: control-command acknowledgment (including the "queued"
-                //    ack returned when a message arrives during Processing)
-                // - `Error`: soft error — draining more messages after an error
-                //    would produce confusing interleaved output
-                // - `Err(_)`: hard error
-                while let Ok(SubmissionResult::Response { content: outgoing }) = &result {
-                    let merged = {
-                        let mut sess = session.lock().await;
-                        sess.threads
-                            .get_mut(&thread_id)
-                            .and_then(|t| t.drain_pending_messages())
-                    };
-                    let Some(next_content) = merged else {
-                        break;
-                    };
-
-                    tracing::debug!(
-                        thread_id = %thread_id,
-                        merged_len = next_content.len(),
-                        "Drain loop: processing merged queued messages"
-                    );
-
-                    // Send the completed turn's response before starting the next.
-                    //
-                    // Known limitations:
-                    // - One-shot channels (HttpChannel) consume the response
-                    //   sender on the first respond() call keyed by msg.id.
-                    //   Subsequent calls (including the outer handler's final
-                    //   respond) are silently dropped. For one-shot channels
-                    //   only this intermediate response is delivered.
-                    // - All drain-loop responses are routed via the original
-                    //   `message`, so channels that key routing on message
-                    //   identity will attribute every response to the first
-                    //   message. This is acceptable for the current
-                    //   single-user-per-thread model.
-                    if let Err(e) = self
-                        .respond_then_done(message, OutgoingResponse::text(outgoing.clone()))
-                        .await
-                    {
-                        tracing::warn!(
-                            thread_id = %thread_id,
-                            "Failed to send intermediate drain-loop response: {e}"
-                        );
-                    }
-
-                    // Process merged queued messages as a single turn.
-                    // Use a message clone with cleared attachments so
-                    // augment_with_attachments doesn't re-apply the original
-                    // message's attachments to unrelated queued text.
-                    let mut queued_msg = message.clone();
-                    queued_msg.attachments.clear();
-                    result = self
-                        .process_user_input(
-                            &queued_msg,
-                            tenant.clone(),
-                            session.clone(),
-                            thread_id,
-                            &next_content,
-                        )
-                        .await;
-
-                    // If processing failed, re-queue the drained content so it
-                    // isn't lost. It will be picked up on the next successful turn.
-                    if !matches!(&result, Ok(SubmissionResult::Response { .. })) {
-                        let mut sess = session.lock().await;
-                        if let Some(thread) = sess.threads.get_mut(&thread_id) {
-                            thread.requeue_drained(next_content);
-                            tracing::debug!(
-                                thread_id = %thread_id,
-                                "Re-queued drained content after non-Response result"
-                            );
-                        }
-                    }
-                }
-
-                result
+            Submission::UserInput { .. }
+            | Submission::Interrupt
+            | Submission::NewThread
+            | Submission::Clear
+            | Submission::Expected { .. }
+            | Submission::ExecApproval { .. }
+            | Submission::ExternalCallback { .. }
+            | Submission::GateAuthResolution { .. }
+            | Submission::ApprovalResponse { .. } => {
+                unreachable!("handled by bridge router in the early-return match above")
             }
             Submission::SystemCommand { command, args } => {
                 tracing::debug!(
@@ -1886,17 +1707,10 @@ impl Agent {
             }
             Submission::Undo => self.process_undo(session, thread_id).await,
             Submission::Redo => self.process_redo(session, thread_id).await,
-            Submission::Interrupt => self.process_interrupt(session, thread_id).await,
             Submission::Compact => self.process_compact(session, thread_id).await,
-            Submission::Clear => self.process_clear(session, thread_id).await,
-            Submission::NewThread => self.process_new_thread(message).await,
             Submission::Heartbeat => self.process_heartbeat().await,
             Submission::Summarize => self.process_summarize(session, thread_id).await,
             Submission::Suggest => self.process_suggest(session, thread_id).await,
-            Submission::Expected { description } => {
-                self.process_expected(session, thread_id, &description, &message.user_id)
-                    .await
-            }
             Submission::JobStatus { job_id } => {
                 self.process_job_status(&tenant, job_id.as_deref()).await
             }
@@ -1909,127 +1723,6 @@ impl Agent {
                 self.process_resume(session, thread_id, checkpoint_id).await
             }
             Submission::ListThreads => self.process_list_threads(session, message).await,
-            Submission::ExecApproval {
-                request_id,
-                approved,
-                always,
-            } => {
-                self.process_approval(
-                    message,
-                    session,
-                    thread_id,
-                    Some(request_id),
-                    approved,
-                    always,
-                )
-                .await
-            }
-            Submission::ExternalCallback { .. } => Ok(SubmissionResult::Error {
-                message: "External callbacks are handled by the engine router".to_string(),
-            }),
-            Submission::GateAuthResolution { .. } => Ok(SubmissionResult::Error {
-                message: "Auth gate resolution is handled by the engine router".to_string(),
-            }),
-            Submission::ApprovalResponse { approved, always } => {
-                let thread_state = {
-                    let sess = session.lock().await;
-                    sess.threads
-                        .get(&thread_id)
-                        .map(|t| t.state)
-                        .unwrap_or(ThreadState::Idle)
-                };
-                // NOTE: TOCTOU possible — state could change between check
-                // and process_approval; process_approval handles stale cases.
-                if should_route_as_approval(thread_state, &message.content) {
-                    self.process_approval(message, session, thread_id, None, approved, always)
-                        .await
-                } else {
-                    // Run BeforeInbound hooks for the downgraded content —
-                    // the hook check above only fires for UserInput submissions,
-                    // and this was parsed as ApprovalResponse.
-                    let content = message.content.clone();
-                    let hook_event = crate::hooks::HookEvent::Inbound {
-                        user_id: message.user_id.clone(),
-                        channel: message.channel.clone(),
-                        content: content.clone(),
-                        thread_id: message.thread_id.as_ref().map(|t| t.as_str().to_string()),
-                    };
-                    let content = match self.hooks().run(&hook_event).await {
-                        Err(crate::hooks::HookError::Rejected { reason }) => {
-                            // Match the main UserInput path's rejection behavior.
-                            return Ok(HandleOutcome::Respond(format!(
-                                "[Message rejected: {reason}]"
-                            )));
-                        }
-                        Err(err) => {
-                            // Match the main UserInput path's error behavior.
-                            return Ok(HandleOutcome::Respond(format!(
-                                "[Message blocked by hook policy: {err}]"
-                            )));
-                        }
-                        Ok(crate::hooks::HookOutcome::Continue {
-                            modified: Some(new_content),
-                        }) => new_content,
-                        _ => content, // Continue — no modification
-                    };
-
-                    // Process as user input with the drain loop so queued
-                    // messages during processing are merged, matching the
-                    // Submission::UserInput arm's behavior.
-                    let mut result = self
-                        .process_user_input(
-                            message,
-                            tenant.clone(),
-                            session.clone(),
-                            thread_id,
-                            &content,
-                        )
-                        .await;
-
-                    while let Ok(SubmissionResult::Response { content: outgoing }) = &result {
-                        let merged = {
-                            let mut sess = session.lock().await;
-                            sess.threads
-                                .get_mut(&thread_id)
-                                .and_then(|thread| thread.drain_pending_messages())
-                        };
-                        let Some(next_content) = merged else {
-                            break;
-                        };
-
-                        if let Err(e) = self
-                            .respond_then_done(message, OutgoingResponse::text(outgoing.clone()))
-                            .await
-                        {
-                            tracing::warn!(
-                                %thread_id,
-                                "Failed to send intermediate drain-loop response: {e}"
-                            );
-                        }
-
-                        let mut queued_msg = message.clone();
-                        queued_msg.attachments.clear();
-                        result = self
-                            .process_user_input(
-                                &queued_msg,
-                                tenant.clone(),
-                                session.clone(),
-                                thread_id,
-                                &next_content,
-                            )
-                            .await;
-
-                        if !matches!(&result, Ok(SubmissionResult::Response { .. })) {
-                            let mut sess = session.lock().await;
-                            if let Some(thread) = sess.threads.get_mut(&thread_id) {
-                                thread.requeue_drained(next_content);
-                            }
-                        }
-                    }
-
-                    result
-                }
-            }
             Submission::Plan { sub } => {
                 use crate::agent::submission::PlanSubcommand;
                 let rewritten = match sub {

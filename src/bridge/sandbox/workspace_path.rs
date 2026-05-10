@@ -1,6 +1,6 @@
 //! Per-project host workspace directory resolution.
 //!
-//! Each engine v2 project gets a real directory on the host filesystem at
+//! Each engine project gets a real directory on the host filesystem at
 //! `~/.ironclaw/projects/<user_id>/<project_id>/`. That's the directory the
 //! user can see, edit, and back up. It's also the bind-mount source for the
 //! per-project sandbox container's `/project/` mount.

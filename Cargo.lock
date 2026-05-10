@@ -4335,9 +4335,7 @@ name = "ironclaw_skills"
 version = "0.3.0"
 dependencies = [
  "chrono",
- "futures",
  "regex",
- "reqwest",
  "serde",
  "serde_json",
  "serde_yml",
@@ -4346,7 +4344,6 @@ dependencies = [
  "thiserror 2.0.18",
  "tokio",
  "tracing",
- "urlencoding",
 ]
 
 [[package]]

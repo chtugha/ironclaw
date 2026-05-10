@@ -13,9 +13,8 @@ repository = "https://github.com/nearai/ironclaw"
 dist = false
 
 [features]
-default = ["registry", "catalog"]
+default = ["registry"]
 registry = ["dep:tempfile"]
-catalog = ["dep:reqwest", "dep:urlencoding", "dep:futures"]
 
 [dependencies]
 chrono = { version = "0.4", features = ["serde"] }
@@ -27,11 +26,6 @@ sha2 = "0.10"
 thiserror = "2"
 tokio = { version = "1", features = ["sync", "process", "fs"] }
 tracing = "0.1"
-
-# Optional (catalog feature)
-futures = { version = "0.3", optional = true }
-reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls-native-roots"], optional = true }
-urlencoding = { version = "2", optional = true }
 
 # Optional (registry feature — tempfile needed for dev-dep in tests, but also
 # the registry module itself uses no extra deps beyond tokio::fs)

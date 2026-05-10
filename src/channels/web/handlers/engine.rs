@@ -1,4 +1,4 @@
-//! Engine v2 API handlers — threads, projects, missions.
+//! Engine API handlers — threads, projects, missions.
 
 use std::sync::Arc;
 

@@ -98,10 +98,10 @@ impl Daemon {
     async fn execute_tool(&self, name: &str, input: Value) -> Result<ToolOutput, ToolError> {
         let ctx = self.job_ctx();
         match name {
-            // Accept both engine v2 and v1 tool names so the daemon doesn't
-            // care which name the caller uses. Plan calls these "file_read"
-            // / "file_write" but the host's tools use "read_file" / "write_file"
-            // — both map to the same struct.
+            // Accept both naming conventions so the daemon doesn't care which
+            // name the caller uses. Plan calls these "file_read" / "file_write"
+            // but the host's tools use "read_file" / "write_file" — both map
+            // to the same struct.
             "file_read" | "read_file" => self.read_file.execute(input, &ctx).await,
             "file_write" | "write_file" => self.write_file.execute(input, &ctx).await,
             "list_dir" => self.list_dir.execute(input, &ctx).await,

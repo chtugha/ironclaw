@@ -71,19 +71,10 @@ fn tool_result_content_for_rebuild(result: &str) -> String {
     sentinel.summary_for_context()
 }
 
-const INVALID_AUTH_TOKEN_MESSAGE: &str = "Invalid token. Please try again.";
 fn requires_preexisting_uuid_thread(channel: &str) -> bool {
     // Gateway-style channels send server-issued conversation UUIDs.
     // Unknown UUIDs should be rejected instead of silently creating a new thread.
     matches!(channel, "gateway" | "test")
-}
-
-fn auth_retry_message_for_error(error: &crate::extensions::ExtensionError) -> Option<String> {
-    matches!(
-        error,
-        crate::extensions::ExtensionError::ValidationFailed(_)
-    )
-    .then(|| INVALID_AUTH_TOKEN_MESSAGE.to_string())
 }
 
 fn history_messages_from_thread(thread: &crate::agent::session::Thread) -> Vec<HistoryMessage> {
@@ -1296,34 +1287,6 @@ impl Agent {
         }
     }
 
-    pub(super) async fn process_interrupt(
-        &self,
-        session: Arc<Mutex<Session>>,
-        thread_id: Uuid,
-    ) -> Result<SubmissionResult, Error> {
-        let mut sess = session.lock().await;
-        let user_id = sess.user_id.clone();
-        let thread = sess
-            .threads
-            .get_mut(&thread_id)
-            .ok_or_else(|| Error::from(crate::error::JobError::NotFound { id: thread_id }))?;
-
-        match thread.state {
-            ThreadState::Processing | ThreadState::AwaitingApproval => {
-                let channel = thread
-                    .source_channel
-                    .clone()
-                    .unwrap_or_else(|| "gateway".to_string());
-                thread.interrupt();
-                drop(sess);
-                self.clear_conversation_live_state(thread_id, &channel, &user_id)
-                    .await;
-                Ok(SubmissionResult::ok_with_message("Interrupted."))
-            }
-            _ => Ok(SubmissionResult::ok_with_message("Nothing to interrupt.")),
-        }
-    }
-
     pub(super) async fn process_compact(
         &self,
         session: Arc<Mutex<Session>>,
@@ -1363,36 +1326,8 @@ impl Agent {
         }
     }
 
-    pub(super) async fn process_clear(
-        &self,
-        session: Arc<Mutex<Session>>,
-        thread_id: Uuid,
-    ) -> Result<SubmissionResult, Error> {
-        let mut sess = session.lock().await;
-        let user_id = sess.user_id.clone();
-        let thread = sess
-            .threads
-            .get_mut(&thread_id)
-            .ok_or_else(|| Error::from(crate::error::JobError::NotFound { id: thread_id }))?;
-        let channel = thread
-            .source_channel
-            .clone()
-            .unwrap_or_else(|| "gateway".to_string());
-        thread.turns.clear();
-        thread.pending_messages.clear();
-        thread.state = ThreadState::Idle;
-        drop(sess);
-        self.clear_conversation_live_state(thread_id, &channel, &user_id)
-            .await;
-
-        // Clear undo history too
-        let undo_mgr = self.session_manager.get_undo_manager(thread_id).await;
-        undo_mgr.lock().await.clear();
-
-        Ok(SubmissionResult::ok_with_message("Thread cleared."))
-    }
-
     /// Process an approval or rejection of a pending tool execution.
+    #[allow(dead_code)]
     pub(super) async fn process_approval(
         &self,
         message: &IncomingMessage,
@@ -2304,176 +2239,6 @@ impl Agent {
             .await;
     }
 
-    /// Handle an auth token submitted while the thread is in auth mode.
-    ///
-    /// The token goes directly to the extension manager's credential store,
-    /// completely bypassing logging, turn creation, history, and compaction.
-    pub(super) async fn process_auth_token(
-        &self,
-        message: &IncomingMessage,
-        pending: &crate::agent::session::PendingAuth,
-        token: &str,
-        session: Arc<Mutex<Session>>,
-        thread_id: Uuid,
-    ) -> Result<Option<String>, Error> {
-        let token = token.trim();
-
-        // Clear auth mode regardless of outcome
-        {
-            let mut sess = session.lock().await;
-            match sess.threads.get_mut(&thread_id) {
-                Some(thread) => thread.pending_auth = None,
-                None => {
-                    tracing::debug!(
-                        %thread_id,
-                        "Thread disappeared before auth mode could be cleared"
-                    );
-                }
-            }
-        }
-
-        let auth_manager = self.deps.auth_manager.clone().or_else(|| {
-            self.tools().secrets_store().cloned().map(|secrets| {
-                Arc::new(crate::auth::extension::AuthManager::new(
-                    secrets,
-                    self.skill_registry().cloned(),
-                    self.deps.extension_manager.clone(),
-                    Some(self.tools().clone()),
-                ))
-            })
-        });
-
-        let result = if let Some(auth_manager) = auth_manager {
-            auth_manager
-                .submit_auth_token(pending.extension_name.as_str(), token, &message.user_id)
-                .await
-        } else if let Some(ext_mgr) = self.deps.extension_manager.as_ref() {
-            ext_mgr
-                .configure_token(pending.extension_name.as_str(), token, &message.user_id)
-                .await
-        } else {
-            return Ok(Some("Extension manager not available.".to_string()));
-        };
-
-        match result {
-            Ok(result) if result.activated => {
-                // Ensure extension is actually activated
-                tracing::info!(
-                    "Extension '{}' configured via auth mode: {}",
-                    pending.extension_name,
-                    result.message
-                );
-                let _ = self
-                    .channels
-                    .send_status(
-                        &message.channel,
-                        StatusUpdate::AuthCompleted {
-                            extension_name: pending.extension_name.clone(),
-                            success: true,
-                            message: result.message.clone(),
-                        },
-                        &message.metadata,
-                    )
-                    .await;
-                Ok(Some(result.message))
-            }
-            Ok(result) => {
-                {
-                    let mut sess = session.lock().await;
-                    match sess.threads.get_mut(&thread_id) {
-                        Some(thread) => {
-                            thread.enter_auth_mode(pending.extension_name.clone());
-                        }
-                        None => {
-                            tracing::debug!(
-                                %thread_id,
-                                "Thread disappeared before auth mode could be re-entered"
-                            );
-                        }
-                    }
-                }
-                emit_auth_required_status(
-                    &self.channels,
-                    message,
-                    pending.extension_name.clone(),
-                    Some(result.message.clone()),
-                    None,
-                    None,
-                    Some(thread_id.to_string()),
-                )
-                .await;
-                Ok(Some(result.message))
-            }
-            Err(e) => {
-                // Token validation errors: re-enter auth mode and re-prompt
-                if let Some(msg) = auth_retry_message_for_error(&e) {
-                    tracing::debug!(
-                        extension = %pending.extension_name,
-                        error = %e,
-                        "Rejected invalid auth token"
-                    );
-                    {
-                        let mut sess = session.lock().await;
-                        match sess.threads.get_mut(&thread_id) {
-                            Some(thread) => {
-                                thread.enter_auth_mode(pending.extension_name.clone());
-                            }
-                            None => {
-                                tracing::debug!(
-                                    %thread_id,
-                                    "Thread disappeared before auth mode could be re-entered on retry"
-                                );
-                            }
-                        }
-                    }
-                    emit_auth_required_status(
-                        &self.channels,
-                        message,
-                        pending.extension_name.clone(),
-                        Some(msg.clone()),
-                        None,
-                        None,
-                        Some(thread_id.to_string()),
-                    )
-                    .await;
-                    return Ok(Some(msg));
-                }
-                // Infrastructure errors
-                let msg = e.to_string();
-                let _ = self
-                    .channels
-                    .send_status(
-                        &message.channel,
-                        StatusUpdate::AuthCompleted {
-                            extension_name: pending.extension_name.clone(),
-                            success: false,
-                            message: msg.clone(),
-                        },
-                        &message.metadata,
-                    )
-                    .await;
-                Ok(Some(msg))
-            }
-        }
-    }
-
-    pub(super) async fn process_new_thread(
-        &self,
-        message: &IncomingMessage,
-    ) -> Result<SubmissionResult, Error> {
-        let session = self
-            .session_manager
-            .get_or_create_session(&message.user_id)
-            .await;
-        let mut sess = session.lock().await;
-        let thread = sess.create_thread(Some(&message.channel));
-        let thread_id = thread.id;
-        Ok(SubmissionResult::ok_with_message(format!(
-            "New thread: {}",
-            thread_id
-        )))
-    }
-
     pub(super) async fn process_switch_thread(
         &self,
         message: &IncomingMessage,
@@ -2832,7 +2597,6 @@ mod tests {
             workspace: None,
             extension_manager: None,
             skill_registry: None,
-            skill_catalog: None,
             skills_config: crate::config::SkillsConfig::default(),
             hooks: Arc::new(crate::hooks::HookRegistry::new()),
             auth_manager: None,
@@ -3057,17 +2821,6 @@ mod tests {
         let turn_usage = turn_usage_from_result(&result).expect("usage should be present");
         assert_eq!(turn_usage.usage.input_tokens, 7);
         assert_eq!(turn_usage.usage.output_tokens, 2);
-    }
-
-    #[test]
-    fn test_auth_retry_message_hides_validation_details() {
-        let err =
-            crate::extensions::ExtensionError::ValidationFailed("wrong format for API key".into());
-
-        assert_eq!(
-            auth_retry_message_for_error(&err).as_deref(),
-            Some("Invalid token. Please try again.")
-        );
     }
 
     #[test]
@@ -3404,7 +3157,6 @@ mod tests {
             workspace: None,
             extension_manager: None,
             skill_registry: None,
-            skill_catalog: None,
             skills_config: SkillsConfig::default(),
             hooks: Arc::new(HookRegistry::new()),
             auth_manager: None,
@@ -3774,7 +3526,7 @@ mod tests {
         thread.queue_message("pending-2".to_string());
         assert_eq!(thread.pending_messages.len(), 2);
 
-        // Simulate what process_clear does: clear turns and pending_messages
+        // Simulate clearing: clear turns and pending_messages
         thread.turns.clear();
         thread.pending_messages.clear();
         thread.state = ThreadState::Idle;

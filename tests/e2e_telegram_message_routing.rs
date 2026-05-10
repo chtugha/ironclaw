@@ -191,7 +191,6 @@ mod tests {
             workspace: components.workspace.clone(),
             extension_manager: components.extension_manager.clone(),
             skill_registry: components.skill_registry.clone(),
-            skill_catalog: components.skill_catalog.clone(),
             skills_config: components.config.skills.clone(),
             hooks: components.hooks.clone(),
             auth_manager: None,

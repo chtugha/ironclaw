@@ -1,14 +1,12 @@
 //! Skills management CLI commands.
 //!
-//! Commands for listing, searching, and inspecting SKILL.md-based skills.
-//! List and info operate on the filesystem only; search queries the ClawHub registry.
+//! Commands for listing and inspecting SKILL.md-based skills.
 
 use std::path::Path;
 
 use clap::Subcommand;
 
 use crate::config::SkillsConfig;
-use ironclaw_skills::catalog::SkillCatalog;
 use ironclaw_skills::{SkillRegistry, SkillSource};
 
 #[derive(Subcommand, Debug, Clone)]
@@ -18,16 +16,6 @@ pub enum SkillsCommand {
         /// Show detailed information (keywords, patterns, source path)
         #[arg(short, long)]
         verbose: bool,
-
-        /// Output as JSON
-        #[arg(long)]
-        json: bool,
-    },
-
-    /// Search ClawHub registry for skills
-    Search {
-        /// Search query
-        query: String,
 
         /// Output as JSON
         #[arg(long)]
@@ -61,7 +49,6 @@ pub async fn run_skills_command(
 
     match cmd {
         SkillsCommand::List { verbose, json } => cmd_list(&config, verbose, json).await,
-        SkillsCommand::Search { query, json } => cmd_search(&query, json).await,
         SkillsCommand::Info { name, json } => cmd_info(&config, &name, json).await,
     }
 }
@@ -123,7 +110,6 @@ async fn cmd_list(config: &SkillsConfig, verbose: bool, json: bool) -> anyhow::R
         println!("  User:      {}", config.local_dir.display());
         println!("  Installed: {}", config.installed_dir.display());
         println!();
-        println!("Use 'ironclaw skills search <query>' to find skills on ClawHub.");
         return Ok(());
     }
 
@@ -161,88 +147,6 @@ async fn cmd_list(config: &SkillsConfig, verbose: bool, json: bool) -> anyhow::R
         println!(
             "Use --verbose for details, or 'ironclaw skills info <name>' for a specific skill."
         );
-    }
-
-    Ok(())
-}
-
-/// Search ClawHub registry.
-async fn cmd_search(query: &str, json: bool) -> anyhow::Result<()> {
-    let catalog = SkillCatalog::new();
-    let outcome = catalog.search(query).await;
-
-    let mut entries = outcome.results;
-    catalog.enrich_search_results(&mut entries, 5).await;
-
-    if json {
-        let json_entries: Vec<serde_json::Value> = entries
-            .iter()
-            .map(|e| {
-                serde_json::json!({
-                    "slug": e.slug,
-                    "name": e.name,
-                    "description": e.description,
-                    "version": e.version,
-                    "stars": e.stars,
-                    "downloads": e.downloads,
-                    "owner": e.owner,
-                })
-            })
-            .collect();
-        let result = serde_json::json!({
-            "query": query,
-            "results": json_entries,
-            "error": outcome.error,
-        });
-        println!(
-            "{}",
-            serde_json::to_string_pretty(&result).unwrap_or_else(|_| "{}".to_string())
-        );
-        return Ok(());
-    }
-
-    println!("ClawHub results for \"{}\":\n", query);
-
-    if entries.is_empty() {
-        if let Some(ref err) = outcome.error {
-            println!("  (registry error: {})", err);
-        } else {
-            println!("  No results found.");
-        }
-        return Ok(());
-    }
-
-    for entry in &entries {
-        let owner_str = entry
-            .owner
-            .as_deref()
-            .map(|o| format!("  by {o}"))
-            .unwrap_or_default();
-
-        let stats: Vec<String> = [
-            entry.stars.map(|s| format!("{s} stars")),
-            entry.downloads.map(|d| format!("{d} downloads")),
-        ]
-        .into_iter()
-        .flatten()
-        .collect();
-        let stats_str = if stats.is_empty() {
-            String::new()
-        } else {
-            format!("  ({})", stats.join(", "))
-        };
-
-        println!(
-            "  {} v{}{}{}",
-            entry.slug, entry.version, owner_str, stats_str
-        );
-        if !entry.description.is_empty() {
-            println!("    {}", truncate(&entry.description, 70));
-        }
-    }
-
-    if let Some(ref err) = outcome.error {
-        println!("\n  (note: {})", err);
     }
 
     Ok(())

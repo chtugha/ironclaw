@@ -34,7 +34,7 @@
 //!   provisioning, cancellations) — migrated into platform in stage 4b.
 //! - [`crate::channels::web::platform::legacy_auth`] for the
 //!   pre-gate `pending_auth` compatibility path — migrated in stage 4b.
-//! - [`crate::bridge`] for the engine v2 pending-gate store and for
+//! - [`crate::bridge`] for the engine pending-gate store and for
 //!   the canonical auth-flow identity resolver
 //!   (`auth_manager::resolve_auth_flow_extension_name`). The `CLAUDE.md`
 //!   "Extension/Auth Invariants" rule requires every gate-display /
@@ -467,7 +467,7 @@ pub(crate) async fn chat_history_handler(
 
     // Verify the thread belongs to the authenticated user before returning any data.
     // Three ownership sources, in order: v1 conversation row, in-memory v1 session,
-    // engine v2 thread store. An engine v2 thread ID will only match the last one
+    // engine thread store. An engine thread ID will only match the last one
     // because the v1 dual-write uses the *assistant* conversation id, not the
     // engine thread id, so the first two will miss.
     if query.thread_id.is_some() {
@@ -597,7 +597,7 @@ pub(crate) async fn chat_history_handler(
         }
     }
 
-    // Engine v2 fallback: an engine thread owns its own messages and does not
+    // Engine fallback: an engine thread owns its own messages and does not
     // always dual-write them into the v1 conversation table (the assistant
     // flow writes into the *assistant* conversation id, so deep-linking
     // by engine thread id gets a v1 miss). Surface them here so
@@ -949,7 +949,7 @@ fn engine_history_entry_to_message(
         tracing::warn!(
             thread_id = %thread_id,
             index,
-            "Skipping engine v2 history message without a valid timestamp"
+            "Skipping engine history message without a valid timestamp"
         );
         return None;
     };
@@ -961,7 +961,7 @@ fn engine_history_entry_to_message(
                 index,
                 timestamp = timestamp_raw,
                 %error,
-                "Skipping engine v2 history message with malformed timestamp"
+                "Skipping engine history message with malformed timestamp"
             );
             return None;
         }

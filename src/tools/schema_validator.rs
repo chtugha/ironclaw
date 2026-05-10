@@ -503,27 +503,16 @@ mod tests {
         use std::sync::Arc;
 
         use crate::tools::Tool;
-        use crate::tools::builtin::{
-            SkillInstallTool, SkillListTool, SkillRemoveTool, SkillSearchTool,
-        };
-        use ironclaw_skills::catalog::SkillCatalog;
+        use crate::tools::builtin::{SkillInstallTool, SkillListTool, SkillRemoveTool};
         use ironclaw_skills::registry::SkillRegistry;
 
         let dir = tempfile::tempdir().expect("tempdir");
         let path = dir.keep();
         let registry = Arc::new(std::sync::RwLock::new(SkillRegistry::new(path)));
-        let catalog = Arc::new(SkillCatalog::with_url("http://127.0.0.1:1"));
 
         let tools: Vec<Box<dyn Tool>> = vec![
             Box::new(SkillListTool::new(Arc::clone(&registry))),
-            Box::new(SkillSearchTool::new(
-                Arc::clone(&registry),
-                Arc::clone(&catalog),
-            )),
-            Box::new(SkillInstallTool::new(
-                Arc::clone(&registry),
-                Arc::clone(&catalog),
-            )),
+            Box::new(SkillInstallTool::new(Arc::clone(&registry))),
             Box::new(SkillRemoveTool::new(Arc::clone(&registry))),
         ];
 

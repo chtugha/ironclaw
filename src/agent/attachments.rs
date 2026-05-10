@@ -109,7 +109,7 @@ fn format_attachment(index: usize, att: &IncomingAttachment) -> String {
                 .unwrap_or_default();
 
             // Pick the right prompt for the agent based on whether the
-            // image bytes reached the model. Engine v2 persists the file to
+            // image bytes reached the model. The engine persists the file to
             // disk but leaves `data` populated so `augment_with_attachments`
             // can emit a multimodal `image_parts` entry — that's the path
             // that actually sends the image to the LLM. An empty `data`

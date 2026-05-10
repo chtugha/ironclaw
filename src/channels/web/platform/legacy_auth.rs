@@ -22,12 +22,12 @@ use crate::channels::web::types::{
 };
 
 /// Clear pending auth mode on the active thread for a user (both legacy
-/// v1 session-scoped and engine v2 pending-gate).
+/// v1 session-scoped and engine pending-gate).
 pub async fn clear_auth_mode(state: &GatewayState, user_id: &str) {
     let _ = clear_auth_mode_for_thread(state, user_id, None).await;
 }
 
-/// Clear both the legacy v1 session `pending_auth` and the engine v2
+/// Clear both the legacy v1 session `pending_auth` and the engine
 /// pending auth gate. Use this after the user has resolved the credential
 /// flow (or explicitly cancelled) and the gate is done with.
 pub(crate) async fn clear_auth_mode_for_thread(
@@ -41,7 +41,7 @@ pub(crate) async fn clear_auth_mode_for_thread(
 }
 
 /// Clear ONLY the legacy v1 session-level `pending_auth` state, leaving
-/// the engine v2 pending auth gate intact. Used by the OAuth callback:
+/// the engine pending auth gate intact. Used by the OAuth callback:
 /// the successful-callback path still needs the engine gate present so
 /// the `ExternalCallback` replay can resolve it (and preserve the
 /// paused_lease), and the failed-callback path should leave the gate

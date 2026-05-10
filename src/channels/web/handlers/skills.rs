@@ -121,36 +121,15 @@ pub async fn skills_search_handler(
         "Skills system not enabled".to_string(),
     ))?);
 
-    let catalog = Arc::clone(state.skill_catalog.as_ref().ok_or((
-        StatusCode::NOT_IMPLEMENTED,
-        "Skill catalog not available".to_string(),
-    ))?);
-
-    // Search ClawHub catalog
-    let catalog_outcome = catalog.search(&req.query).await;
-    let catalog_error = catalog_outcome.error.clone();
-
-    // Enrich top results with detail data (stars, downloads, owner)
-    let mut entries = catalog_outcome.results;
-    catalog.enrich_search_results(&mut entries, 5).await;
-
     let query_lower = req.query.to_lowercase();
-    let (installed_names, matching_skills): (
-        Vec<String>,
-        Vec<ironclaw_skills::types::LoadedSkill>,
-    ) = {
+    let matching_skills: Vec<ironclaw_skills::types::LoadedSkill> = {
         let guard = registry.read().map_err(|e| {
             (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 format!("Skill registry lock poisoned: {}", e),
             )
         })?;
-        let installed_names: Vec<String> = guard
-            .skills()
-            .iter()
-            .map(|s| s.manifest.name.clone())
-            .collect();
-        let matching_skills = guard
+        guard
             .skills()
             .iter()
             .filter(|s| {
@@ -158,39 +137,15 @@ pub async fn skills_search_handler(
                     || s.manifest.description.to_lowercase().contains(&query_lower)
             })
             .cloned()
-            .collect();
-        (installed_names, matching_skills)
+            .collect()
     };
     let installed: Vec<SkillInfo> = join_all(matching_skills.into_iter().map(skill_info)).await;
 
-    let catalog_json: Vec<serde_json::Value> = entries
-        .into_iter()
-        .map(|e| {
-            let is_installed = ironclaw_skills::catalog::catalog_entry_is_installed(
-                &e.slug,
-                &e.name,
-                &installed_names,
-            );
-            serde_json::json!({
-                "slug": e.slug,
-                "name": e.name,
-                "description": e.description,
-                "version": e.version,
-                "score": e.score,
-                "updatedAt": e.updated_at,
-                "stars": e.stars,
-                "downloads": e.downloads,
-                "owner": e.owner,
-                "installed": is_installed,
-            })
-        })
-        .collect();
-
     Ok(Json(SkillSearchResponse {
-        catalog: catalog_json,
+        catalog: vec![],
         installed,
-        registry_url: catalog.registry_url().to_string(),
-        catalog_error,
+        registry_url: String::new(),
+        catalog_error: None,
     }))
 }
 
@@ -220,50 +175,15 @@ pub async fn skills_install_handler(
         "Skills system not enabled".to_string(),
     ))?;
 
-    let mut resolved_download_key = None;
     let install_payload = if let Some(ref raw) = req.content {
         crate::tools::builtin::skill_tools::SkillInstallPayload {
             skill_md: raw.clone(),
             ..crate::tools::builtin::skill_tools::SkillInstallPayload::default()
         }
     } else if let Some(ref url) = req.url {
-        // Fetch from explicit URL (with SSRF protection)
         crate::tools::builtin::skill_tools::fetch_skill_payload(url)
             .await
             .map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))?
-    } else if let Some(ref catalog) = state.skill_catalog {
-        let download_key = if let Some(slug) = req.slug.as_deref().filter(|s| !s.is_empty()) {
-            slug.to_string()
-        } else if req.name.contains('/') {
-            req.name.clone()
-        } else {
-            let outcome = catalog.search(&req.name).await;
-            match ironclaw_skills::catalog::resolve_catalog_slug_for_name(
-                &req.name,
-                &outcome.results,
-            ) {
-                Ok(Some(resolved)) => resolved,
-                Ok(None) => {
-                    let reason = outcome
-                        .error
-                        .unwrap_or_else(|| "no unique catalog match was found".to_string());
-                    return Err((
-                        StatusCode::BAD_REQUEST,
-                        format!(
-                            "Could not resolve skill name '{}' to a catalog slug: {}",
-                            req.name, reason
-                        ),
-                    ));
-                }
-                Err(e) => return Err((StatusCode::BAD_REQUEST, e.to_string())),
-            }
-        };
-        let url =
-            ironclaw_skills::catalog::skill_download_url(catalog.registry_url(), &download_key);
-        resolved_download_key = Some(download_key);
-        crate::tools::builtin::skill_tools::fetch_skill_payload(&url)
-            .await
-            .map_err(|e| (StatusCode::BAD_GATEWAY, e.to_string()))?
     } else {
         return Ok(Json(ActionResponse::fail(
             "Provide 'content' or 'url' to install a skill".to_string(),
@@ -271,11 +191,8 @@ pub async fn skills_install_handler(
     };
 
     let normalized = ironclaw_skills::normalize_line_endings(&install_payload.skill_md);
-    let requested_identifier = install_requested_identifier(
-        &req.name,
-        req.slug.as_deref(),
-        resolved_download_key.as_deref(),
-    );
+    let requested_identifier =
+        install_requested_identifier(&req.name, req.slug.as_deref(), None);
 
     // Parse, check duplicates, and get install_dir under a brief read lock.
     let (user_dir, skill_name_from_parse, install_content) = {
@@ -399,50 +316,6 @@ pub async fn skills_remove_handler(
 #[cfg(test)]
 mod tests {
     use std::path::Path;
-
-    #[test]
-    fn catalog_entry_matches_installed_slug_suffix() {
-        let installed = vec!["mortgage-calculator".to_string()];
-
-        assert!(ironclaw_skills::catalog::catalog_entry_is_installed(
-            "finance/mortgage-calculator",
-            "Mortgage Calculator",
-            &installed,
-        ));
-    }
-
-    #[test]
-    fn catalog_entry_matches_installed_display_name() {
-        let installed = vec!["Mortgage Calculator".to_string()];
-
-        assert!(ironclaw_skills::catalog::catalog_entry_is_installed(
-            "finance/mortgage-calculator",
-            "Mortgage Calculator",
-            &installed,
-        ));
-    }
-
-    #[test]
-    fn catalog_entry_does_not_match_unrelated_installed_skill() {
-        let installed = vec!["budget-planner".to_string()];
-
-        assert!(!ironclaw_skills::catalog::catalog_entry_is_installed(
-            "finance/mortgage-calculator",
-            "Mortgage Calculator",
-            &installed,
-        ));
-    }
-
-    #[test]
-    fn catalog_entry_matches_owner_aware_normalized_install_name() {
-        let installed = vec!["finance-mortgage-calculator".to_string()];
-
-        assert!(ironclaw_skills::catalog::catalog_entry_is_installed(
-            "finance/mortgage-calculator",
-            "Mortgage Calculator",
-            &installed,
-        ));
-    }
 
     #[test]
     fn install_requested_identifier_prefers_resolved_slug_for_manual_name_installs() {

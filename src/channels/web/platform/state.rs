@@ -398,8 +398,6 @@ pub struct GatewayState {
     pub config_toml_path: Option<std::path::PathBuf>,
     /// Skill registry for skill management API.
     pub skill_registry: Option<Arc<std::sync::RwLock<ironclaw_skills::SkillRegistry>>>,
-    /// Skill catalog for searching the ClawHub registry.
-    pub skill_catalog: Option<Arc<ironclaw_skills::catalog::SkillCatalog>>,
     /// Shared auth manager for gateway auth submission and readiness checks.
     pub auth_manager: Option<Arc<crate::auth::extension::AuthManager>>,
     /// Scheduler for sending follow-up messages to running agent jobs.

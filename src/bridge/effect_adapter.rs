@@ -64,11 +64,11 @@ pub struct EffectBridgeAdapter {
     /// Optional HTTP interceptor for trace recording / replay. When set, every
     /// tool call dispatched through this adapter gets it stamped onto its
     /// `JobContext`, so the built-in `http`/`web_fetch`/etc. tools route their
-    /// outbound requests through the interceptor. Without this, engine v2 tool
+    /// outbound requests through the interceptor. Without this, engine tool
     /// calls bypass the recorder entirely — recorded traces end up with zero
     /// `http_exchanges` and replay can't substitute responses.
     http_interceptor: RwLock<Option<Arc<dyn crate::llm::recording::HttpInterceptor>>>,
-    /// Engine v2 store used to mirror live-installed v1 skills into `DocType::Skill`.
+    /// Engine store used to mirror live-installed v1 skills into `DocType::Skill`.
     engine_store: RwLock<Option<Arc<dyn Store>>>,
     /// V1 skill registry used to load the just-installed skill for v2 sync.
     skill_registry: RwLock<Option<Arc<std::sync::RwLock<SkillRegistry>>>>,
@@ -1305,7 +1305,7 @@ impl EffectBridgeAdapter {
         if is_v1_only_tool(&lookup_name) {
             return Err(EngineError::Effect {
                 reason: format!(
-                    "Tool '{}' is not available in engine v2. \
+                    "Tool '{}' is not available. \
                      Tell the user to use the slash command instead (e.g. /routine, /job).",
                     action_name
                 ),
@@ -1315,7 +1315,7 @@ impl EffectBridgeAdapter {
         if is_v1_auth_tool(&lookup_name) {
             return Err(EngineError::Effect {
                 reason: format!(
-                    "Tool '{}' is not available in engine v2. \
+                    "Tool '{}' is not available. \
                      Authentication is handled automatically by the kernel.",
                     action_name
                 ),
@@ -1528,7 +1528,7 @@ impl EffectBridgeAdapter {
             tool_name: lookup_name.to_string(),
             parameters: redacted_params,
             user_id: context.user_id.clone(),
-            context: format!("engine_v2:{}", context.thread_id),
+            context: format!("engine:{}", context.thread_id),
         };
 
         match self.hooks.run(&hook_event).await {
@@ -1550,7 +1550,7 @@ impl EffectBridgeAdapter {
 
         let mut job_ctx = JobContext::with_user(
             &context.user_id,
-            "engine_v2",
+            "engine",
             format!("Thread {}", context.thread_id),
         );
         // Stamp the trace HTTP interceptor onto the per-call JobContext so
@@ -1560,7 +1560,7 @@ impl EffectBridgeAdapter {
             job_ctx.http_interceptor = Some(Arc::clone(interceptor));
         }
 
-        // ── Sandbox interception (engine v2 Phase 8) ──
+        // ── Sandbox interception ──
         //
         // For sandbox-eligible tools (`file_read`, `file_write`, `list_dir`,
         // `apply_patch`, `shell`), check whether the call's path argument
@@ -4088,7 +4088,7 @@ mod tests {
 
     /// End-to-end permission verification for the real `MemoryWriteTool`.
     ///
-    /// Engine v2 resolves missing `memory_write` rows through the seeded
+    /// The engine resolves missing `memory_write` rows through the seeded
     /// `AlwaysAllow` default, but protected targets still raise a per-call
     /// `Always` floor that must not be bypassed.
     #[cfg(feature = "libsql")]

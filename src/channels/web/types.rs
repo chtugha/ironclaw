@@ -128,7 +128,7 @@ pub struct HistoryResponse {
     /// Used by the frontend to keep deep-linked non-gateway threads read-only.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub channel: Option<String>,
-    /// Unified pending gate state for engine v2.
+    /// Unified pending gate state.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub pending_gate: Option<PendingGateInfo>,
     /// Durable in-flight turn state used to rehydrate the UI after refresh.
@@ -1151,7 +1151,7 @@ pub struct HealthResponse {
     pub channel: &'static str,
 }
 
-// ── Engine v2 response types ────────────────────────────────
+// ── Engine response types ───────────────────────────────────
 
 #[derive(Debug, Serialize)]
 pub struct EngineThreadListResponse {

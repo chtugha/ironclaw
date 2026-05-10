@@ -612,7 +612,7 @@ fn build_prior_tool_lookup(messages: &[ChatMessage]) -> HashMap<String, HashMap<
 
 /// Parse a JSON object literal out of `content` and merge its top-level
 /// scalar fields into `lookup[key]`. If `content` is not valid JSON, falls
-/// back to a Python-dict-repr coercion (the engine v2 orchestrator emits
+/// back to a Python-dict-repr coercion (the engine orchestrator emits
 /// tool results as `str(dict)` which uses single quotes and Python keyword
 /// literals — see [`coerce_python_repr_to_json`]).
 fn index_json_into(
@@ -637,7 +637,7 @@ fn index_json_into(
 
 /// Best-effort coercion of a Python `repr(dict)` string into valid JSON.
 ///
-/// The engine v2 Python orchestrator stringifies tool results with
+/// The engine Python orchestrator stringifies tool results with
 /// `str(output)`, which produces:
 ///   * single-quoted strings instead of double-quoted ones
 ///   * Python keyword literals: `True` / `False` / `None`

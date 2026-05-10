@@ -242,7 +242,7 @@ pub async fn start_server(
             axum::routing::delete(routines_delete_handler),
         )
         .route("/api/routines/{id}/runs", get(routines_runs_handler))
-        // Engine v2
+        // Engine
         .route("/api/engine/threads", get(engine_threads_handler))
         .route(
             "/api/engine/threads/{id}",

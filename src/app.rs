@@ -26,7 +26,6 @@ use crate::tools::wasm::WasmToolRuntime;
 use crate::workspace::{EmbeddingCacheConfig, EmbeddingProvider, Workspace};
 use ironclaw_safety::SafetyLayer;
 use ironclaw_skills::SkillRegistry;
-use ironclaw_skills::catalog::SkillCatalog;
 
 /// Fully initialized application components, ready for channel wiring
 /// and agent construction.
@@ -66,7 +65,6 @@ pub struct AppComponents {
     /// Shared thread/session manager used by the standard agent runtime.
     pub agent_session_manager: Arc<AgentSessionManager>,
     pub skill_registry: Option<Arc<std::sync::RwLock<SkillRegistry>>>,
-    pub skill_catalog: Option<Arc<SkillCatalog>>,
     pub cost_guard: Arc<crate::agent::cost_guard::CostGuard>,
     pub recording_handle: Option<Arc<RecordingLlm>>,
     pub http_interceptor: Option<Arc<dyn HttpInterceptor>>,
@@ -1263,7 +1261,7 @@ impl AppBuilder {
         }
 
         // Skills system
-        let (skill_registry, skill_catalog) = if self.config.skills.enabled {
+        let skill_registry = if self.config.skills.enabled {
             let mut registry = SkillRegistry::new(self.config.skills.local_dir.clone())
                 .with_installed_dir(self.config.skills.installed_dir.clone())
                 .with_bundled_content(crate::skills::bundled::load_bundled_skills())
@@ -1286,11 +1284,10 @@ impl AppBuilder {
             }
 
             let registry = Arc::new(std::sync::RwLock::new(registry));
-            let catalog = ironclaw_skills::catalog::shared_catalog();
-            tools.register_skill_tools(Arc::clone(&registry), Arc::clone(&catalog));
-            (Some(registry), Some(catalog))
+            tools.register_skill_tools(Arc::clone(&registry));
+            Some(registry)
         } else {
-            (None, None)
+            None
         };
 
         let context_manager = Arc::new(ContextManager::new(self.config.agent.max_parallel_jobs));
@@ -1334,7 +1331,6 @@ impl AppBuilder {
             hooks,
             agent_session_manager,
             skill_registry,
-            skill_catalog,
             cost_guard,
             recording_handle,
             http_interceptor,

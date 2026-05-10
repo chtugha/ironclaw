@@ -568,7 +568,7 @@ pub enum StatusUpdate {
     },
     /// Thread list for interactive resume picker.
     ThreadList { threads: Vec<ThreadSummary> },
-    /// Engine v2 thread list for TUI activity sidebar.
+    /// Engine thread list for TUI activity sidebar.
     EngineThreadList { threads: Vec<EngineThreadSummary> },
     /// Full conversation history for displaying a resumed thread in the TUI.
     ConversationHistory {
@@ -586,7 +586,7 @@ pub struct HistoryMessage {
     pub timestamp: chrono::DateTime<chrono::Utc>,
 }
 
-/// Engine v2 thread summary for TUI sidebar display.
+/// Engine thread summary for TUI sidebar display.
 #[derive(Debug, Clone)]
 pub struct EngineThreadSummary {
     pub id: String,

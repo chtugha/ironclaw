@@ -1,12 +1,12 @@
 //! Agent-callable tools for managing extensions (MCP servers and WASM tools).
 //!
 //! These built-ins manage extension discovery and lifecycle from conversation.
-//! In engine v2, the normal model-facing enablement path is
-//! `tool_activate(name=...)`: blocked integrations surface in capability
-//! background, and `tool_activate` internally handles install/auth/activation
-//! as needed. `tool_search`, `tool_list`, and `tool_info` support discovery;
+//! The normal model-facing enablement path is `tool_activate(name=...)`:
+//! blocked integrations surface in capability background, and
+//! `tool_activate` internally handles install/auth/activation as needed.
+//! `tool_search`, `tool_list`, and `tool_info` support discovery;
 //! `tool_install` / `tool_auth` remain available as narrower runtime/compat
-//! surfaces rather than the primary v2 prompt contract.
+//! surfaces.
 
 use std::sync::Arc;
 

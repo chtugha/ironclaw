@@ -1,4 +1,4 @@
-//! Engine v2 router — handles user messages via the engine when enabled.
+//! Engine router — handles user messages via the engine.
 
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, OnceLock};
@@ -52,7 +52,7 @@ use std::collections::HashSet;
 fn engine_err(context: &str, e: impl std::fmt::Display) -> Error {
     Error::from(crate::error::JobError::ContextError {
         id: uuid::Uuid::nil(),
-        reason: format!("engine v2 {context}: {e}"),
+        reason: format!("engine {context}: {e}"),
     })
 }
 
@@ -96,14 +96,14 @@ fn bridge_outcome_for_failed_thread(
         channel = %channel,
         error = %error,
         debug_detail_bytes = debug_detail.map(|d| d.len()),
-        "engine v2: thread failed; showing user-friendly summary",
+        "engine: thread failed; showing user-friendly summary",
     );
     if let Some(detail) = debug_detail {
         tracing::debug!(
             user_id = %user_id,
             channel = %channel,
             detail,
-            "engine v2: thread failure debug detail",
+            "engine: thread failure debug detail",
         );
     }
     if sse_will_deliver_to_user {
@@ -285,17 +285,17 @@ async fn persist_project_attachments(
             attachment_project_relative_path(message, project_id, attachment, index);
         let absolute_path = project_root.join(Path::new(&relative_path));
         let Some(parent) = absolute_path.parent() else {
-            tracing::warn!(path = %absolute_path.display(), "engine v2: attachment path had no parent");
+            tracing::warn!(path = %absolute_path.display(), "engine: attachment path had no parent");
             continue;
         };
 
         if let Err(e) = tokio::fs::create_dir_all(parent).await {
-            tracing::warn!(path = %parent.display(), error = %e, "engine v2: failed to create attachment directory");
+            tracing::warn!(path = %parent.display(), error = %e, "engine: failed to create attachment directory");
             continue;
         }
 
         if let Err(e) = tokio::fs::write(&absolute_path, &attachment.data).await {
-            tracing::warn!(path = %absolute_path.display(), error = %e, "engine v2: failed to persist attachment file");
+            tracing::warn!(path = %absolute_path.display(), error = %e, "engine: failed to persist attachment file");
             continue;
         }
 
@@ -342,7 +342,7 @@ async fn save_attachment_index_notes(
         doc.tags = note.tags;
         doc.source_thread_id = Some(thread_id);
         if let Err(e) = store.save_memory_doc(&doc).await {
-            tracing::warn!(error = %e, title = %doc.title, "engine v2: failed to save attachment index note");
+            tracing::warn!(error = %e, title = %doc.title, "engine: failed to save attachment index note");
         }
     }
 }
@@ -910,7 +910,7 @@ async fn persist_always_allow(
         Ok(()) => debug!(
             tool = %pending.action_name,
             user_id = %pending.user_id,
-            "Persisted AlwaysAllow permission to DB settings (engine v2)"
+            "Persisted AlwaysAllow permission to DB settings"
         ),
         Err(e) => tracing::warn!(
             tool = %pending.action_name,
@@ -1561,7 +1561,7 @@ pub async fn init_engine(agent: &Agent) -> Result<(), Error> {
         return Ok(()); // double-check after acquiring write lock
     }
 
-    debug!("engine v2: initializing engine state");
+    debug!("engine: initializing engine state");
 
     let llm_adapter = Arc::new(LlmBridgeAdapter::new(
         agent.llm().clone(),
@@ -1577,8 +1577,8 @@ pub async fn init_engine(agent: &Agent) -> Result<(), Error> {
         .with_global_auto_approve(agent.config().auto_approve_tools),
     );
     // Propagate the trace HTTP interceptor (live recording or replay) so
-    // engine v2 tool dispatch records/replays HTTP exchanges. Without this,
-    // recorded traces miss every outbound call made from the engine v2 path
+    // engine tool dispatch records/replays HTTP exchanges. Without this,
+    // recorded traces miss every outbound call made from the engine path
     // and replay can't substitute responses.
     if let Some(ref interceptor) = agent.deps.http_interceptor {
         effect_adapter
@@ -1592,11 +1592,11 @@ pub async fn init_engine(agent: &Agent) -> Result<(), Error> {
     debug!(
         has_secrets_store = has_secrets,
         has_credential_registry = has_cred_reg,
-        "engine v2: auth manager init check"
+        "engine: auth manager init check"
     );
     let auth_manager = if let Some(mgr) = agent.deps.auth_manager.clone() {
         effect_adapter.set_auth_manager(Arc::clone(&mgr)).await;
-        debug!("engine v2: auth manager set on effect adapter");
+        debug!("engine: auth manager set on effect adapter");
         Some(mgr)
     } else if let Some(ss) = agent.tools().secrets_store().cloned() {
         let mgr = Arc::new(AuthManager::new(
@@ -1606,10 +1606,10 @@ pub async fn init_engine(agent: &Agent) -> Result<(), Error> {
             Some(Arc::clone(agent.tools())),
         ));
         effect_adapter.set_auth_manager(Arc::clone(&mgr)).await;
-        debug!("engine v2: auth manager set on effect adapter");
+        debug!("engine: auth manager set on effect adapter");
         Some(mgr)
     } else {
-        debug!("engine v2: no secrets store — auth manager NOT created");
+        debug!("engine: no secrets store — auth manager NOT created");
         None
     };
 
@@ -1625,7 +1625,7 @@ pub async fn init_engine(agent: &Agent) -> Result<(), Error> {
         .cleanup_terminal_state(chrono::Duration::minutes(5))
         .await;
     if cleaned > 0 {
-        debug!("engine v2: cleaned {cleaned} terminal state entries on startup");
+        debug!("engine: cleaned {cleaned} terminal state entries on startup");
     }
 
     // Generate the engine workspace README
@@ -1684,7 +1684,7 @@ pub async fn init_engine(agent: &Agent) -> Result<(), Error> {
     {
         Some(project) => project.id,
         None => {
-            let project = Project::new(owner_id, "default", "Default project for engine v2");
+            let project = Project::new(owner_id, "default", "Default project");
             let project_id = project.id;
             store
                 .save_project(&project)
@@ -1702,7 +1702,7 @@ pub async fn init_engine(agent: &Agent) -> Result<(), Error> {
         .bootstrap_user(&agent.deps.owner_id)
         .await
     {
-        debug!("engine v2: bootstrap_user failed: {e}");
+        debug!("engine: bootstrap_user failed: {e}");
     }
 
     // Create mission manager and start cron ticker. Attach:
@@ -1747,19 +1747,19 @@ pub async fn init_engine(agent: &Agent) -> Result<(), Error> {
         mission_manager_inner.with_insights_interval(missions_config.insights_interval);
     let mission_manager = Arc::new(mission_manager_inner);
     if let Err(e) = thread_manager.recover_project_threads(project_id).await {
-        debug!("engine v2: recover_project_threads failed: {e}");
+        debug!("engine: recover_project_threads failed: {e}");
     }
     if let Err(e) = mission_manager.bootstrap_project(project_id).await {
-        debug!("engine v2: bootstrap_project failed: {e}");
+        debug!("engine: bootstrap_project failed: {e}");
     }
     if let Err(e) = mission_manager
         .resume_recoverable_threads(&agent.deps.owner_id)
         .await
     {
-        debug!("engine v2: resume_recoverable_threads failed: {e}");
+        debug!("engine: resume_recoverable_threads failed: {e}");
     }
     if let Err(e) = thread_manager.resume_background_threads(project_id).await {
-        debug!("engine v2: resume_background_threads failed: {e}");
+        debug!("engine: resume_background_threads failed: {e}");
     }
     mission_manager.start_cron_ticker(agent.deps.owner_id.clone());
     mission_manager.start_event_listener(agent.deps.owner_id.clone());
@@ -1804,7 +1804,7 @@ pub async fn init_engine(agent: &Agent) -> Result<(), Error> {
         .ensure_learning_missions(project_id, owner_id)
         .await
     {
-        debug!("engine v2: failed to create learning missions: {e}");
+        debug!("engine: failed to create learning missions: {e}");
     }
 
     // Migrate v1 skills to v2 MemoryDocs (skill selection happens in the
@@ -1826,10 +1826,10 @@ pub async fn init_engine(agent: &Agent) -> Result<(), Error> {
             .await
             {
                 Ok(count) if count > 0 => {
-                    debug!("engine v2: migrated {count} v1 skill(s)");
+                    debug!("engine: migrated {count} v1 skill(s)");
                 }
                 Err(e) => {
-                    debug!("engine v2: skill migration failed: {e}");
+                    debug!("engine: skill migration failed: {e}");
                 }
                 _ => {}
             }
@@ -1874,11 +1874,11 @@ pub async fn init_engine(agent: &Agent) -> Result<(), Error> {
         });
 
         let factory: Arc<dyn ProjectMountFactory> =
-            if crate::bridge::sandbox::engine_v2_sandbox_enabled() {
+            if crate::bridge::sandbox::is_sandbox_enabled() {
                 match crate::sandbox::container::connect_docker().await {
                     Ok(docker) => {
                         debug!(
-                            "engine v2: SANDBOX_ENABLED=true — using containerized mount factory"
+                            "SANDBOX_ENABLED=true — using containerized mount factory"
                         );
                         let manager = Arc::new(ProjectSandboxManager::new(docker));
                         Arc::new(ContainerizedMountFactory::new(manager, resolver))
@@ -1886,7 +1886,7 @@ pub async fn init_engine(agent: &Agent) -> Result<(), Error> {
                     Err(e) => {
                         tracing::warn!(
                             error = %e,
-                            "engine v2: SANDBOX_ENABLED=true but Docker is not reachable; \
+                            "SANDBOX_ENABLED=true but Docker is not reachable; \
                              falling back to host filesystem mount factory"
                         );
                         Arc::new(FilesystemMountFactory::new(resolver))
@@ -1904,16 +1904,11 @@ pub async fn init_engine(agent: &Agent) -> Result<(), Error> {
         .set_mission_manager(Arc::clone(&mission_manager))
         .await;
 
-    // Wire mission manager into agent for /expected command
-    agent
-        .set_mission_manager(Arc::clone(&mission_manager))
-        .await;
-
     let pending_gates = Arc::new(crate::gate::store::PendingGateStore::new(Some(Arc::new(
         crate::gate::persistence::FileGatePersistence::with_default_path(),
     ))));
     if let Err(e) = pending_gates.restore_from_persistence().await {
-        debug!("engine v2: failed to restore pending gates: {e}");
+        debug!("engine: failed to restore pending gates: {e}");
     }
     // Restart sweep: any in-flight Approval gate from a prior boot has
     // lost its in-memory await receiver. Falling through to legacy
@@ -1923,7 +1918,7 @@ pub async fn init_engine(agent: &Agent) -> Result<(), Error> {
     // clean retry path instead.
     invalidate_stranded_approval_gates(&pending_gates, agent.deps.sse_tx.as_ref()).await;
     if let Err(e) = reconcile_pending_gate_state(&store_dyn, &pending_gates).await {
-        debug!("engine v2: pending gate reconciliation failed: {e}");
+        debug!("engine: pending gate reconciliation failed: {e}");
     }
 
     let resolutions = Arc::new(crate::bridge::gate_controller::GateResolutions::new());
@@ -2143,7 +2138,7 @@ pub async fn resolve_engine_auth_callback(
     })
 }
 
-/// Handle an approval response (yes/no/always) for engine v2.
+/// Handle an approval response (yes/no/always).
 ///
 /// Called from `handle_message` when the user responds to an approval request.
 pub async fn handle_approval(
@@ -2180,7 +2175,7 @@ pub async fn handle_approval(
     {
         PendingGateResolution::Resolved(p) => p,
         PendingGateResolution::None => {
-            debug!(user_id = %message.user_id, "engine v2: no pending approval for user, ignoring");
+            debug!(user_id = %message.user_id, "engine: no pending approval for user, ignoring");
             return Ok(BridgeOutcome::Respond(
                 "No pending approval for this thread.".into(),
             ));
@@ -2254,7 +2249,7 @@ pub async fn handle_exec_approval(
     debug!(
         user_id = %message.user_id,
         request_id = %request_id,
-        "engine v2: no matching pending approval for request_id"
+        "engine: no matching pending approval for request_id"
     );
     Ok(BridgeOutcome::Respond(
         "No matching pending approval found.".into(),
@@ -2293,7 +2288,7 @@ pub async fn handle_external_callback(
     debug!(
         user_id = %message.user_id,
         request_id = %request_id,
-        "engine v2: no matching pending auth gate for external callback"
+        "engine: no matching pending auth gate for external callback"
     );
     Ok(BridgeOutcome::Respond(
         "No matching pending authentication gate found.".into(),
@@ -2338,7 +2333,7 @@ pub async fn handle_auth_gate_resolution(
     debug!(
         user_id = %message.user_id,
         request_id = %request_id,
-        "engine v2: no matching pending auth gate for request_id"
+        "engine: no matching pending auth gate for request_id"
     );
     Ok(BridgeOutcome::Respond(
         "No matching pending authentication gate found.".into(),
@@ -3073,7 +3068,7 @@ pub async fn handle_interrupt(
                 .stop_thread(*tid, &message.user_id)
                 .await
             {
-                debug!(thread_id = %tid, error = %e, "engine v2: failed to stop thread");
+                debug!(thread_id = %tid, error = %e, "engine: failed to stop thread");
             } else {
                 stopped += 1;
             }
@@ -3081,7 +3076,7 @@ pub async fn handle_interrupt(
     }
 
     if stopped > 0 {
-        debug!(stopped, "engine v2: interrupted running threads");
+        debug!(stopped, "engine: interrupted running threads");
         Ok(BridgeOutcome::Respond("Interrupted.".into()))
     } else {
         Ok(BridgeOutcome::Respond("Nothing to interrupt.".into()))
@@ -3327,7 +3322,7 @@ async fn clear_engine_conversation(agent: &Agent, message: &IncomingMessage) -> 
     debug!(
         user_id = %message.user_id,
         conversation_id = %conv_id,
-        "engine v2: conversation cleared"
+        "engine: conversation cleared"
     );
 
     Ok(())
@@ -3493,7 +3488,7 @@ pub async fn transition_engine_pending_auth_request_to_pairing(
     Ok(Some(next_pending.request_id.to_string()))
 }
 
-/// Handle a user message through the engine v2 pipeline.
+/// Handle a user message through the engine pipeline.
 pub async fn handle_with_engine(
     agent: &Agent,
     message: &IncomingMessage,
@@ -3531,7 +3526,7 @@ async fn handle_with_engine_inner(
     debug!(
         user_id = %message.user_id,
         channel = %message.channel,
-        "engine v2: handling message"
+        "engine: handling message"
     );
 
     let thread_scope = message.conversation_scope();
@@ -3644,7 +3639,7 @@ async fn handle_with_engine_inner(
         tracing::warn!(
             user_id = %message.user_id,
             channel = %message.channel,
-            "engine v2: inbound message blocked — contains leaked secret"
+            "engine: inbound message blocked — contains leaked secret"
         );
         return Ok(BridgeOutcome::Respond(warning));
     }
@@ -3662,7 +3657,7 @@ async fn handle_with_engine_inner(
     )
     .await;
 
-    // Engine v2 threads are text-only today, so attachments must be folded
+    // Engine threads are text-only today, so attachments must be folded
     // into the effective user content before routing to the engine. This
     // preserves extracted document text, project-local file paths, and
     // attachment metadata in both the engine thread and the dual-written
@@ -3679,10 +3674,11 @@ async fn handle_with_engine_inner(
     // conversation thread spawned below. Errors are logged but never block
     // user-facing message handling.
     //
-    // v1-created routines are NOT touched by this path: they live in the
-    // v1 routine store and are fired by the v1 RoutineEngine in the
-    // background. Missions created via the routine_create alias live in
-    // the engine store and are fired here.
+    // v1-created OnEvent routines are NOT fired here — only engine-store
+    // missions (created via mission_create / routine_create alias) are
+    // matched. The v1 RoutineEngine still handles cron-based routines
+    // via its ticker, but v1 OnEvent routines no longer fire on user
+    // messages.
     fire_event_missions_for_message(state, message, effective_content).await;
 
     // Send "Thinking..." status to the channel
@@ -3836,7 +3832,7 @@ async fn handle_with_engine_inner(
         }
     }
 
-    debug!(thread_id = %thread_id, "engine v2: thread spawned");
+    debug!(thread_id = %thread_id, "engine: thread spawned");
     let outcome = await_thread_outcome(agent, state, message, conv_id, thread_id).await;
     // Drop per-execution context. The `PendingGate` row (if a gate
     // fired) carries everything the resolver needs from here on.
@@ -3916,7 +3912,7 @@ fn spawn_deferred_context_cleanup(
             .await;
         debug!(
             thread_id = %thread_id,
-            "engine v2: deferred context cleanup ran"
+            "engine: deferred context cleanup ran"
         );
     });
 }
@@ -3948,7 +3944,7 @@ async fn fire_event_missions_for_message(
     if message.is_agent_broadcast {
         debug!(
             channel = %message.channel,
-            "engine v2: skipping mission firing — message is an agent broadcast echo"
+            "engine: skipping mission firing — message is an agent broadcast echo"
         );
         return;
     }
@@ -3956,7 +3952,7 @@ async fn fire_event_missions_for_message(
         debug!(
             channel = %message.channel,
             upstream_mission_id = %upstream,
-            "engine v2: skipping mission firing — message originated from a mission"
+            "engine: skipping mission firing — message originated from a mission"
         );
         return;
     }
@@ -3981,7 +3977,7 @@ async fn fire_event_missions_for_message(
                 count = spawned.len(),
                 channel = %message.channel,
                 user_id = %message.user_id,
-                "engine v2: fired {} OnEvent mission(s) from inbound message",
+                "engine: fired {} OnEvent mission(s) from inbound message",
                 spawned.len()
             );
         }
@@ -3990,7 +3986,7 @@ async fn fire_event_missions_for_message(
             debug!(
                 channel = %message.channel,
                 error = %error,
-                "engine v2: fire_on_message_event failed; continuing with normal handling"
+                "engine: fire_on_message_event failed; continuing with normal handling"
             );
         }
     }
@@ -4133,7 +4129,7 @@ async fn await_thread_outcome(
 
     let result = match outcome {
         ThreadOutcome::Completed { response } => {
-            debug!(thread_id = %thread_id, "engine v2: completed");
+            debug!(thread_id = %thread_id, "engine: completed");
 
             // Text-based auth fallback: detect authentication_required in the
             // response and enter auth mode. This is a defense-in-depth safety net
@@ -4439,7 +4435,7 @@ fn interpret_message_event(role: &str, content_preview: &str) -> Option<&'static
 /// 2. **SSE app events** — pushes a `Response` event for the web gateway.
 /// 3. **v1 conversation_messages table** — the gateway history API reads from
 ///    here, so a missing write would leave the message out of `/api/chat/history`.
-/// 4. **v2 ConversationManager entries** — the engine v2 follow-up code path
+/// 4. **v2 ConversationManager entries** — the engine follow-up code path
 ///    builds new-thread context from `ConversationSurface.entries` (see
 ///    `build_history_from_entries`). Without an entry here, when the user
 ///    replies after a mission notification the new thread spawns with no
@@ -4599,9 +4595,9 @@ pub(crate) async fn handle_mission_notification(
             .await;
     }
 
-    // Inject the mission output into each notify channel's v2 conversation
+    // Inject the mission output into each notify channel's conversation
     // so follow-up user messages spawn threads whose history includes the
-    // mission output. Without this step, the engine v2 conversation history
+    // mission output. Without this step, the engine conversation history
     // (`build_history_from_entries`) is unaware of the mission and the user
     // can't ask follow-ups about its content.
     if let Some(conv_mgr) = conv_mgr {
@@ -6044,11 +6040,11 @@ pub async fn get_engine_mission(
 /// Manually fire a mission (spawn a new thread).
 pub async fn fire_engine_mission(mission_id: &str, user_id: &str) -> Result<Option<String>, Error> {
     let Some(lock) = ENGINE_STATE.get() else {
-        return Err(engine_err("not initialized", "engine v2 is not running"));
+        return Err(engine_err("not initialized", "engine is not running"));
     };
     let guard = lock.read().await;
     let Some(state) = guard.as_ref() else {
-        return Err(engine_err("not initialized", "engine v2 is not running"));
+        return Err(engine_err("not initialized", "engine is not running"));
     };
 
     let mid = uuid::Uuid::parse_str(mission_id).map_err(|e| engine_err("parse mission_id", e))?;
@@ -6076,11 +6072,11 @@ pub async fn pause_engine_mission(
     is_admin: bool,
 ) -> Result<(), Error> {
     let Some(lock) = ENGINE_STATE.get() else {
-        return Err(engine_err("not initialized", "engine v2 is not running"));
+        return Err(engine_err("not initialized", "engine is not running"));
     };
     let guard = lock.read().await;
     let Some(state) = guard.as_ref() else {
-        return Err(engine_err("not initialized", "engine v2 is not running"));
+        return Err(engine_err("not initialized", "engine is not running"));
     };
 
     let mid = uuid::Uuid::parse_str(mission_id).map_err(|e| engine_err("parse mission_id", e))?;
@@ -6107,11 +6103,11 @@ pub async fn resume_engine_mission(
     is_admin: bool,
 ) -> Result<(), Error> {
     let Some(lock) = ENGINE_STATE.get() else {
-        return Err(engine_err("not initialized", "engine v2 is not running"));
+        return Err(engine_err("not initialized", "engine is not running"));
     };
     let guard = lock.read().await;
     let Some(state) = guard.as_ref() else {
-        return Err(engine_err("not initialized", "engine v2 is not running"));
+        return Err(engine_err("not initialized", "engine is not running"));
     };
 
     let mid = uuid::Uuid::parse_str(mission_id).map_err(|e| engine_err("parse mission_id", e))?;
@@ -6129,7 +6125,7 @@ pub async fn resume_engine_mission(
 
 /// Reset the global engine state so a fresh engine can be initialized.
 ///
-/// Used by the test rig to isolate engine v2 tests — each test gets a clean
+/// Used by the test rig to isolate engine tests — each test gets a clean
 /// engine state instead of inheriting the prior test's `OnceLock` singleton.
 #[cfg(feature = "libsql")]
 pub async fn reset_engine_state() {
@@ -6160,14 +6156,14 @@ pub async fn override_engine_project_root_for_test(path: PathBuf) -> bool {
 }
 
 /// Build retrospective `ExecutionTrace`s for every currently-known engine
-/// thread. Returns an empty vector when engine v2 is not initialized.
+/// thread. Returns an empty vector when engine is not initialized.
 ///
 /// Test-only helper: snapshot-based replay tests fold each trace into
 /// per-thread entries under `ReplayOutcome.engine_threads`. Not part of any
 /// public API; exposed under `#[doc(hidden)]` because integration tests live
 /// in a separate crate and cannot see `#[cfg(test)]`-only items.
 ///
-/// **Caller must serialize access** when more than one engine v2 replay can
+/// **Caller must serialize access** when more than one engine replay can
 /// run concurrently — `ENGINE_STATE` is a process-global singleton and this
 /// function iterates every thread across every project. Snapshot tests in
 /// `tests/e2e_engine_v2.rs` take `engine_v2_test_lock()` for this reason;
@@ -6588,7 +6584,7 @@ async fn migrate_legacy_user_ids(store: &Arc<dyn ironclaw_engine::Store>, owner_
         }
     }
 
-    debug!("engine v2: legacy user_id migration complete for owner {owner_id}");
+    debug!("engine: legacy user_id migration complete for owner {owner_id}");
 }
 
 /// Clamp a caller-supplied `always` approval flag to what the pending
@@ -7117,7 +7113,6 @@ mod tests {
             workspace: None,
             extension_manager: None,
             skill_registry: None,
-            skill_catalog: None,
             skills_config: crate::config::SkillsConfig::default(),
             hooks: Arc::new(crate::hooks::HookRegistry::new()),
             auth_manager: None,
@@ -8684,7 +8679,6 @@ mod tests {
             workspace: None,
             extension_manager: None,
             skill_registry: None,
-            skill_catalog: None,
             skills_config: SkillsConfig::default(),
             hooks: Arc::new(HookRegistry::new()),
             auth_manager: None,
@@ -10075,7 +10069,7 @@ mod tests {
         assert_eq!(parse_credential_name(r#"{"foo":"bar"}"#), None);
     }
 
-    /// Regression test for #2491: engine v2 must block messages containing
+    /// Regression test for #2491: engine must block messages containing
     /// leaked secrets (API keys, tokens) instead of forwarding them to the LLM.
     #[tokio::test]
     async fn handle_with_engine_blocks_inbound_secrets() {
@@ -10138,7 +10132,7 @@ mod tests {
         .await;
 
         *lock.write().await = None;
-        outcome.expect("engine v2 secret scan regression test");
+        outcome.expect("engine secret scan regression test");
     }
 
     /// Regression test for issue #2084 upgrade path.

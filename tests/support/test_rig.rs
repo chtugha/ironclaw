@@ -1249,12 +1249,10 @@ impl TestRigBuilder {
                     .with_installed_dir(installed_skills_dir.clone());
                 let _loaded = registry.discover_all().await;
                 let registry = Arc::new(std::sync::RwLock::new(registry));
-                let catalog = ironclaw_skills::catalog::shared_catalog();
                 components
                     .tools
-                    .register_skill_tools(Arc::clone(&registry), Arc::clone(&catalog));
+                    .register_skill_tools(Arc::clone(&registry));
                 components.skill_registry = Some(registry);
-                components.skill_catalog = Some(catalog);
             }
 
             // Register any extra test-specific tools.
@@ -1392,7 +1390,6 @@ impl TestRigBuilder {
             workspace: components.workspace,
             extension_manager: components.extension_manager,
             skill_registry: components.skill_registry,
-            skill_catalog: components.skill_catalog,
             skills_config: components.config.skills.clone(),
             hooks: components.hooks,
             auth_manager: None,

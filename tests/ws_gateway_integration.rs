@@ -62,7 +62,6 @@ async fn start_test_server() -> (
         llm_session_manager: None,
         config_toml_path: None,
         skill_registry: None,
-        skill_catalog: None,
         auth_manager: None,
         chat_rate_limiter: ironclaw::channels::web::platform::state::PerUserRateLimiter::new(
             30, 60,

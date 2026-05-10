@@ -49,7 +49,7 @@ pub use routine::{
 };
 pub use secrets_tools::{SecretDeleteTool, SecretListTool};
 pub use shell::ShellTool;
-pub use skill_tools::{SkillInstallTool, SkillListTool, SkillRemoveTool, SkillSearchTool};
+pub use skill_tools::{SkillInstallTool, SkillListTool, SkillRemoveTool};
 pub use system::{SystemToolsListTool, SystemVersionTool};
 pub use time::TimeTool;
 pub use tool_info::ToolInfoTool;

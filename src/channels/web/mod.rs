@@ -64,7 +64,7 @@ use crate::extensions::ExtensionManager;
 use crate::orchestrator::job_manager::ContainerJobManager;
 use crate::tools::ToolRegistry;
 use crate::workspace::{EmbeddingCacheConfig, EmbeddingProvider, Workspace};
-use ironclaw_skills::catalog::SkillCatalog;
+
 use ironclaw_skills::registry::SkillRegistry;
 
 use self::log_layer::{LogBroadcaster, LogLevelHandle};
@@ -171,7 +171,6 @@ impl GatewayChannel {
             llm_session_manager: None,
             config_toml_path: None,
             skill_registry: None,
-            skill_catalog: None,
             auth_manager: None,
             chat_rate_limiter: platform::state::PerUserRateLimiter::new(30, 60),
             oauth_rate_limiter: platform::state::PerUserRateLimiter::new(20, 60),
@@ -237,7 +236,6 @@ impl GatewayChannel {
             llm_session_manager: self.state.llm_session_manager.clone(),
             config_toml_path: self.state.config_toml_path.clone(),
             skill_registry: self.state.skill_registry.clone(),
-            skill_catalog: self.state.skill_catalog.clone(),
             auth_manager: self.state.auth_manager.clone(),
             chat_rate_limiter: platform::state::PerUserRateLimiter::new(30, 60),
             oauth_rate_limiter: platform::state::PerUserRateLimiter::new(20, 60),
@@ -370,12 +368,6 @@ impl GatewayChannel {
     /// Inject the skill registry for skill management API.
     pub fn with_skill_registry(mut self, sr: Arc<std::sync::RwLock<SkillRegistry>>) -> Self {
         self.rebuild_state(|s| s.skill_registry = Some(sr));
-        self
-    }
-
-    /// Inject the skill catalog for skill search API.
-    pub fn with_skill_catalog(mut self, sc: Arc<SkillCatalog>) -> Self {
-        self.rebuild_state(|s| s.skill_catalog = Some(sc));
         self
     }
 

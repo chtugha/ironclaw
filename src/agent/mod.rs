@@ -2,16 +2,14 @@
 //!
 //! The agent orchestrates:
 //! - Message routing from channels
-//! - Job scheduling and execution
 //! - Tool invocation with safety
 //! - Self-repair for stuck jobs
 //! - Proactive heartbeat execution
-//! - Routine-based scheduled and reactive jobs
 //! - Turn-based session management with undo
 //! - Context compaction for long conversations
 
-mod agent_loop;
 pub mod agentic_loop;
+mod agent_loop;
 mod attachments;
 mod commands;
 pub mod compaction;
@@ -30,7 +28,7 @@ mod session_manager;
 pub mod submission;
 pub mod task;
 mod thread_ops;
-pub mod undo;
+mod undo;
 
 pub(crate) use agent_loop::truncate_for_preview;
 pub use agent_loop::{Agent, AgentDeps};
