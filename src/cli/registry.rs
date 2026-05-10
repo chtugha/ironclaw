@@ -247,6 +247,14 @@ async fn cmd_install(
     let (manifests, bundle) = catalog.resolve(name)?;
 
     if manifests.is_empty() {
+        if bundle.is_some() {
+            anyhow::bail!(
+                "Bundle '{}' has no extensions available in the registry yet. \
+                 Run `ironclaw registry info {}` to see what is expected.",
+                name,
+                name
+            );
+        }
         anyhow::bail!("No extensions found for '{}'.", name);
     }
 
