@@ -31,6 +31,8 @@ pub struct LlmCallConfig {
     pub model: Option<String>,
     /// Opaque metadata forwarded to the LLM provider.
     pub metadata: HashMap<String, String>,
+    /// When true, signals this is a planning call (compact prompt, low token budget).
+    pub is_planning_call: bool,
 }
 
 /// Output from a single LLM call.

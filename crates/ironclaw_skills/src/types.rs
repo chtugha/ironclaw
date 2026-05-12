@@ -137,7 +137,7 @@ impl ActivationCriteria {
 }
 
 fn default_max_context_tokens() -> usize {
-    2000
+    0
 }
 
 /// Parsed skill manifest from SKILL.md YAML frontmatter.

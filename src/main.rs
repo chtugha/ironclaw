@@ -1250,6 +1250,7 @@ async fn async_main() -> anyhow::Result<()> {
         },
         builder: components.builder,
         llm_backend: config.llm.backend.clone(),
+        is_local_backend: config.llm.is_local(),
         tenant_rates: Arc::new(ironclaw::tenant::TenantRateRegistry::new(
             config.agent.max_llm_concurrent_per_user.unwrap_or(4),
             config.agent.max_jobs_concurrent_per_user.unwrap_or(3),

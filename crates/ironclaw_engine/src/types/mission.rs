@@ -98,6 +98,8 @@ pub enum MissionCadence {
     },
     /// Only spawn when manually triggered (via mission_fire tool or API).
     Manual,
+    /// Spawn when the system has been idle for at least `threshold_secs` seconds.
+    Idle { threshold_secs: u64 },
 }
 
 /// A mission — a long-running goal that spawns threads over time.

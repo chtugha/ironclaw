@@ -40,7 +40,7 @@ impl RuntimeCheckpoint {
                     let role = message.get("role").and_then(|value| value.as_str());
                     let content = message.get("content").and_then(|value| value.as_str());
                     matches!(role, Some("System" | "system"))
-                        && content.is_some_and(crate::executor::prompt::is_codeact_system_prompt)
+                        && content.is_some_and(crate::executor::prompt::is_engine_system_prompt)
                 })
             })
     }
@@ -58,13 +58,13 @@ impl RuntimeCheckpoint {
             let role = message.get("role").and_then(|value| value.as_str());
             let content = message.get("content").and_then(|value| value.as_str());
             matches!(role, Some("System" | "system"))
-                && content.is_some_and(crate::executor::prompt::is_codeact_system_prompt)
+                && content.is_some_and(crate::executor::prompt::is_engine_system_prompt)
         }) {
             let refreshed = message
                 .get("content")
                 .and_then(|value| value.as_str())
                 .map(|content| {
-                    crate::executor::prompt::refresh_codeact_system_prompt(content, system_prompt)
+                    crate::executor::prompt::refresh_engine_system_prompt(content, system_prompt)
                 })
                 .unwrap_or_else(|| system_prompt.to_string());
             if message
@@ -238,7 +238,7 @@ impl ExecutionLoop {
         let thread_has_prompt = |messages: &[crate::types::message::ThreadMessage]| {
             messages.iter().any(|message| {
                 message.role == crate::types::message::MessageRole::System
-                    && crate::executor::prompt::is_codeact_system_prompt(&message.content)
+                    && crate::executor::prompt::is_engine_system_prompt(&message.content)
             })
         };
 
@@ -302,21 +302,67 @@ impl ExecutionLoop {
             );
             return;
         }
-        let system_prompt = crate::executor::prompt::build_codeact_system_prompt_with_docs(
-            &capabilities,
-            &compact_actions,
-            system_docs,
-            self.platform_info.as_ref(),
-        );
+        let codeact_override = self.thread.config.codeact_enabled;
 
-        let messages_updated = crate::executor::prompt::upsert_codeact_system_prompt(
+        let plan_steps: Vec<String> = checkpoint
+            .persisted_state
+            .get("plan_steps")
+            .and_then(|v| serde_json::from_value(v.clone()).ok())
+            .unwrap_or_default();
+        let plan_current_step: usize = checkpoint
+            .persisted_state
+            .get("plan_current_step")
+            .and_then(|v| v.as_u64())
+            .map(|v| v as usize)
+            .unwrap_or(0);
+        let plan_anchor: Option<String> = if plan_steps.is_empty() {
+            None
+        } else {
+            Some(
+                crate::executor::planner::PlanAnchor {
+                    steps: plan_steps,
+                    current_step: plan_current_step,
+                }
+                .to_prompt_section(),
+            )
+        };
+
+        let use_tier0 =
+            crate::executor::tier0_prompt::should_use_tier0(self.platform_info.as_ref(), codeact_override);
+        let system_prompt = if use_tier0 {
+            crate::executor::tier0_prompt::build_tier0_system_prompt(
+                self.platform_info.as_ref(),
+                plan_anchor.as_deref(),
+            )
+        } else {
+            crate::executor::prompt::build_codeact_system_prompt_with_docs(
+                &capabilities,
+                &compact_actions,
+                system_docs,
+                self.platform_info.as_ref(),
+            )
+        };
+
+        let plan_anchor_text_for_state = if use_tier0 {
+            plan_anchor.as_deref().unwrap_or("").to_string()
+        } else {
+            String::new()
+        };
+        if let Some(obj) = checkpoint.persisted_state.as_object_mut() {
+            obj.insert(
+                "plan_anchor_text".to_string(),
+                serde_json::Value::String(plan_anchor_text_for_state),
+            );
+        }
+
+        let messages_updated = crate::executor::prompt::upsert_engine_system_prompt(
             &mut self.thread.messages,
             system_prompt.clone(),
         );
         let internal_updated = if self.thread.internal_messages.is_empty() {
             false
         } else {
-            crate::executor::prompt::upsert_codeact_system_prompt(
+            crate::executor::prompt::upsert_engine_system_prompt(
                 &mut self.thread.internal_messages,
                 system_prompt.clone(),
             )

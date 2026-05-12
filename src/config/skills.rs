@@ -34,15 +34,10 @@ impl Default for SkillsConfig {
             local_dir: default_skills_dir(),
             installed_dir: default_installed_skills_dir(),
             max_active_skills: 3,
-            // 6000 tokens accommodates one large persona setup (~3000)
-            // plus one or two companion skills (~2000 each). With
-            // max_active_skills=3 the slot count is the binding
-            // constraint for setup bundles. Chain-loaded companions
-            // are selected in requires.skills order, so put the most
-            // critical companions first. After setup_marker exclusion
-            // retires the setup skill, the full budget goes to
-            // reactive skills (commitment-triage, decision-capture, etc.).
-            max_context_tokens: 6000,
+            // 2048 tokens is the home-use ceiling for skill prompts.
+            // Each skill must declare max_context_tokens in its frontmatter;
+            // skills with max_context_tokens == 0 are excluded from injection.
+            max_context_tokens: 2048,
             max_scan_depth: 3,
         }
     }

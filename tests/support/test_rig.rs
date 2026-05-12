@@ -1401,6 +1401,7 @@ impl TestRigBuilder {
             sandbox_readiness: ironclaw::agent::routine_engine::SandboxReadiness::DisabledByConfig,
             builder: None,
             llm_backend: "nearai".to_string(),
+            is_local_backend: false,
             tenant_rates: std::sync::Arc::new(ironclaw::tenant::TenantRateRegistry::new(4, 3)),
         };
 

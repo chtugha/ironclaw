@@ -2430,3 +2430,47 @@ mod tests {
         assert!(locked_entry.locked_reason.is_some());
     }
 }
+
+/// Returns `true` when the given LLM provider should be treated as local:
+///
+/// - adapter is `"ollama"` (always local by design), or
+/// - `base_url` resolves to a loopback address (localhost, 127.0.0.1, [::1]).
+///
+/// Used server-side when building the provider registration form so the
+/// "Local model" checkbox is pre-populated. POST handlers should accept
+/// the explicit `is_local` value from the submitted payload and not call
+/// this function on writes.
+pub(crate) fn infer_is_local(base_url: Option<&str>, adapter: &str) -> bool {
+    if adapter == "ollama" {
+        return true;
+    }
+    if let Some(url) = base_url {
+        return crate::tools::mcp::config::is_localhost_url(url);
+    }
+    false
+}
+
+#[cfg(test)]
+mod infer_is_local_tests {
+    use super::infer_is_local;
+
+    #[test]
+    fn ollama_adapter_is_always_local() {
+        assert!(infer_is_local(None, "ollama"));
+        assert!(infer_is_local(Some("http://example.com"), "ollama"));
+    }
+
+    #[test]
+    fn loopback_urls_are_local() {
+        assert!(infer_is_local(Some("http://localhost:11434"), "open_ai_completions"));
+        assert!(infer_is_local(Some("http://127.0.0.1:8080/v1"), "open_ai_completions"));
+        assert!(infer_is_local(Some("http://[::1]:8080"), "open_ai_completions"));
+    }
+
+    #[test]
+    fn remote_urls_are_not_local() {
+        assert!(!infer_is_local(Some("https://api.openai.com"), "open_ai_completions"));
+        assert!(!infer_is_local(Some("https://cloud-api.near.ai/v1"), "nearai"));
+        assert!(!infer_is_local(None, "open_ai_completions"));
+    }
+}

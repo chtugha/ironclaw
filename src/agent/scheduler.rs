@@ -806,6 +806,9 @@ mod tests {
             multi_tenant: false,
             max_llm_concurrent_per_user: None,
             max_jobs_concurrent_per_user: None,
+            max_prompt_tokens: 8192,
+            plan_confidence_threshold: 0.6,
+            codeact_enabled: None,
         };
         let cm = Arc::new(ContextManager::new(5));
         let llm: Arc<dyn LlmProvider> = Arc::new(StubLlm);

@@ -275,6 +275,8 @@ pub enum CapabilityStatus {
     Error,
     /// Capability is known in the registry but not installed.
     AvailableNotInstalled,
+    /// Capability is available but currently syncing data (e.g. CalDAV calendar sync).
+    Syncing,
 }
 
 /// High-level category for capability background summaries.

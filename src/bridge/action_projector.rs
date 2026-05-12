@@ -336,6 +336,7 @@ fn provider_extension_rank(extension: &InstalledExtension) -> u8 {
         CapabilityStatus::Inactive => 4,
         CapabilityStatus::NeedsAuth => 3,
         CapabilityStatus::NeedsSetup => 2,
+        CapabilityStatus::Syncing => 2,
         CapabilityStatus::Error => 1,
         CapabilityStatus::AvailableNotInstalled => 0,
         CapabilityStatus::ReadyScoped | CapabilityStatus::Latent => 0,

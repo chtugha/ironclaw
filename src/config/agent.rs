@@ -44,6 +44,12 @@ pub struct AgentConfig {
     pub max_llm_concurrent_per_user: Option<usize>,
     /// Maximum concurrent jobs per user. None = use default (3).
     pub max_jobs_concurrent_per_user: Option<usize>,
+    /// Maximum total prompt tokens for a single LLM call.
+    pub max_prompt_tokens: usize,
+    /// Minimum plan confidence score to reuse a cached plan (0.0–1.0).
+    pub plan_confidence_threshold: f64,
+    /// Override for CodeAct mode. None = auto-detect from backend.
+    pub codeact_enabled: Option<bool>,
 }
 
 impl AgentConfig {
@@ -71,6 +77,9 @@ impl AgentConfig {
             multi_tenant: false,
             max_llm_concurrent_per_user: None,
             max_jobs_concurrent_per_user: None,
+            max_prompt_tokens: 8192,
+            plan_confidence_threshold: 0.6,
+            codeact_enabled: None,
         }
     }
 
@@ -152,6 +161,17 @@ impl AgentConfig {
             multi_tenant: parse_bool_env("AGENT_MULTI_TENANT", false)?,
             max_llm_concurrent_per_user: parse_option_env("TENANT_MAX_LLM_CONCURRENT")?,
             max_jobs_concurrent_per_user: parse_option_env("TENANT_MAX_JOBS_CONCURRENT")?,
+            max_prompt_tokens: db_first_or_default(
+                &settings.agent.max_prompt_tokens,
+                &defaults.max_prompt_tokens,
+                "AGENT_MAX_PROMPT_TOKENS",
+            )?,
+            plan_confidence_threshold: db_first_or_default(
+                &settings.agent.plan_confidence_threshold,
+                &defaults.plan_confidence_threshold,
+                "AGENT_PLAN_CONFIDENCE_THRESHOLD",
+            )?,
+            codeact_enabled: settings.agent.codeact_enabled,
         })
     }
 }

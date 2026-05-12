@@ -183,6 +183,7 @@ async fn try_fetch_models(provider_id: &str, config_path: Option<&Path>) -> Opti
                 return None;
             }
             let base_url = def.default_base_url.clone().unwrap_or_default();
+            let is_local = crate::tools::mcp::config::is_localhost_url(&base_url);
             llm_config.provider = Some(crate::llm::RegistryProviderConfig {
                 protocol: def.protocol,
                 provider_id: def.id.clone(),
@@ -196,6 +197,7 @@ async fn try_fetch_models(provider_id: &str, config_path: Option<&Path>) -> Opti
                 auth_path: None,
                 cache_retention: Default::default(),
                 unsupported_params: def.unsupported_params.clone(),
+                is_local,
             });
         }
     }

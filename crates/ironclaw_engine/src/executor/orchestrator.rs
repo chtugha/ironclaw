@@ -17,6 +17,12 @@
 //! - `__retrieve_docs__` — query memory docs
 //! - `__check_budget__` — remaining tokens/time/USD
 //! - `__get_actions__` — available tool definitions
+//! - `__list_skills__` — list available skills with scoring metadata
+//! - `__record_skill_usage__` — record skill success/failure for learning
+//! - `__regex_match__` — evaluate a regex against text (Rust regex crate, linear-time)
+//! - `__set_active_skills__` — persist selected skill provenance onto the thread
+//! - `__apply_token_guard__` — enforce token budget with priority-order degradation
+//! - `__save_plan_doc__` — persist a DocType::Plan MemoryDoc and return its ID
 
 use std::sync::Arc;
 use std::sync::OnceLock;
@@ -642,6 +648,16 @@ pub async fn execute_orchestrator(
                     // __set_active_skills__(skills)
                     "__set_active_skills__" => handle_set_active_skills(args, thread),
 
+                    // __apply_token_guard__(parts) -> {"dropped": [...], "fits": bool}
+                    "__apply_token_guard__" => {
+                        handle_apply_token_guard(args, thread)
+                    }
+
+                    // __save_plan_doc__(goal, steps, is_decomposition) -> doc_id str
+                    "__save_plan_doc__" => {
+                        handle_save_plan_doc(args, thread, store).await
+                    }
+
                     // Unknown — let Monty resolve it (user-defined functions, builtins)
                     other => ExtFunctionResult::NotFound(other.to_string()),
                 };
@@ -804,6 +820,11 @@ async fn handle_llm_complete(
             .and_then(|v| v.as_str())
             .map(String::from),
         metadata: HashMap::new(),
+        is_planning_call: explicit_config
+            .as_ref()
+            .and_then(|cfg| cfg.get("is_planning_call"))
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false),
     };
 
     match deps.llm.complete(&messages, &actions, &config).await {
@@ -2368,6 +2389,8 @@ async fn handle_retrieve_docs(
                         "type": format!("{:?}", d.doc_type),
                         "title": d.title,
                         "content": d.content,
+                        "doc_id": d.id.0.to_string(),
+                        "metadata": d.metadata,
                     })
                 })
                 .collect();
@@ -2446,9 +2469,15 @@ async fn handle_get_actions(
             let actions_json: Vec<serde_json::Value> = actions
                 .iter()
                 .map(|a| {
+                    let words: Vec<&str> = a.description.split_whitespace().collect();
+                    let description = if words.len() > 60 {
+                        words[..60].join(" ")
+                    } else {
+                        a.description.clone()
+                    };
                     serde_json::json!({
                         "name": a.name,
-                        "description": a.description,
+                        "description": description,
                         "params": a.parameters_schema,
                     })
                 })
@@ -2667,6 +2696,230 @@ fn handle_set_active_skills(args: &[MontyObject], thread: &mut Thread) -> ExtFun
     ExtFunctionResult::Return(MontyObject::None)
 }
 
+/// Handle `__apply_token_guard__(parts) -> {"dropped": [...], "fits": bool}`.
+///
+/// Receives a `PromptParts` dict from Python, applies priority-order budget
+/// degradation via [`crate::executor::token_guard::apply`], and returns the
+/// dropped-item summary and a `fits` boolean to the Python caller.
+fn handle_apply_token_guard(
+    args: &[MontyObject],
+    thread: &Thread,
+) -> ExtFunctionResult {
+    use crate::executor::token_guard::{
+        apply, HistoryMessage, PromptBudget, PromptParts, ScoredItem,
+    };
+
+    let parts_json = match args.first().map(monty_to_json) {
+        Some(v) if !v.is_null() => v,
+        _ => {
+            return ExtFunctionResult::Return(json_to_monty(
+                &serde_json::json!({"dropped": [], "fits": true}),
+            ));
+        }
+    };
+
+    let budget_total = parts_json
+        .get("budget")
+        .and_then(|v| v.as_u64())
+        .map(|v| v as usize)
+        .unwrap_or(thread.config.max_prompt_tokens);
+
+    let system_prompt = parts_json
+        .get("system_prompt")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
+
+    let plan_anchor_text = parts_json
+        .get("plan_anchor")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
+
+    let parse_scored_items = |key: &str| -> Vec<ScoredItem> {
+        parts_json
+            .get(key)
+            .and_then(|v| v.as_array())
+            .map(|arr| {
+                arr.iter()
+                    .map(|item| ScoredItem {
+                        name: item
+                            .get("name")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("")
+                            .to_string(),
+                        content: item
+                            .get("content")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("")
+                            .to_string(),
+                        score: item
+                            .get("score")
+                            .and_then(|v| v.as_f64())
+                            .unwrap_or(0.5),
+                        doc_type: item
+                            .get("type")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("")
+                            .to_string(),
+                    })
+                    .collect()
+            })
+            .unwrap_or_default()
+    };
+
+    let skills = parse_scored_items("skills");
+    let memory_docs = parse_scored_items("memory_docs");
+    let tool_schemas = parse_scored_items("tool_schemas");
+
+    let history: Vec<HistoryMessage> = parts_json
+        .get("conversation_history")
+        .and_then(|v| v.as_array())
+        .map(|arr| {
+            arr.iter()
+                .map(|item| HistoryMessage {
+                    role: item
+                        .get("role")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("")
+                        .to_string(),
+                    content: item
+                        .get("content")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("")
+                        .to_string(),
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+
+    let budget = PromptBudget {
+        total: budget_total,
+        system_prompt_reserved: 1024,
+        skill_budget: thread.config.skill_token_budget,
+        memory_doc_budget: budget_total / 4,
+        tool_schema_budget: 512,
+    };
+
+    let mut prompt_parts = PromptParts {
+        system_prompt,
+        plan_anchor_text,
+        skills,
+        memory_docs,
+        tool_schemas,
+        history,
+    };
+
+    let thread_id = thread.id.to_string();
+    let (dropped, fits) = apply(&budget, &mut prompt_parts, &thread_id);
+
+    let dropped_list: Vec<serde_json::Value> = {
+        let mut list = Vec::new();
+        for i in 0..dropped.memory_docs {
+            list.push(serde_json::json!({"kind": "memory_doc", "index": i}));
+        }
+        for i in 0..dropped.skills {
+            list.push(serde_json::json!({"kind": "skill", "index": i}));
+        }
+        if dropped.tool_descriptions_truncated > 0 {
+            list.push(serde_json::json!({
+                "kind": "tool_descriptions_truncated",
+                "count": dropped.tool_descriptions_truncated,
+            }));
+        }
+        for i in 0..dropped.history_messages {
+            list.push(serde_json::json!({"kind": "history_message", "index": i}));
+        }
+        list
+    };
+
+    let result = serde_json::json!({
+        "dropped": dropped_list,
+        "fits": fits,
+        "survivors": {
+            "skills": prompt_parts.skills.iter().map(|s| s.name.clone()).collect::<Vec<_>>(),
+            "memory_docs": prompt_parts.memory_docs.iter().map(|d| d.name.clone()).collect::<Vec<_>>(),
+        },
+        "system_prompt": prompt_parts.system_prompt,
+        "conversation_history": prompt_parts.history.iter().map(|h| {
+            serde_json::json!({"role": h.role, "content": h.content})
+        }).collect::<Vec<_>>(),
+        "tool_schemas": prompt_parts.tool_schemas.iter().map(|t| {
+            serde_json::json!({"name": t.name, "content": t.content})
+        }).collect::<Vec<_>>(),
+    });
+
+    ExtFunctionResult::Return(json_to_monty(&result))
+}
+
+/// Handle `__save_plan_doc__(goal, steps, is_decomposition) -> doc_id str`.
+///
+/// Creates a `DocType::Plan` MemoryDoc with the given goal, steps list, and
+/// decomposition flag, persists it via the store, and returns the doc ID string
+/// to Python.
+async fn handle_save_plan_doc(
+    args: &[MontyObject],
+    thread: &Thread,
+    store: Option<&Arc<dyn Store>>,
+) -> ExtFunctionResult {
+    use crate::types::memory::{DocType, MemoryDoc};
+
+    let Some(store) = store else {
+        debug!("__save_plan_doc__: no store available");
+        return ExtFunctionResult::Return(MontyObject::None);
+    };
+
+    let goal = args.first().map(monty_to_string).unwrap_or_default();
+
+    let steps_json = args.get(1).map(monty_to_json).unwrap_or_default();
+    let steps: Vec<String> = steps_json
+        .as_array()
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|v| v.as_str().map(String::from))
+                .collect()
+        })
+        .unwrap_or_default();
+
+    let is_decomposition = args
+        .get(2)
+        .map(|o| matches!(o, MontyObject::Bool(true)))
+        .unwrap_or(false);
+
+    let content = steps.join("\n");
+    let title_goal: String = goal.chars().take(64).collect();
+    let title = format!("plan:{}", title_goal);
+
+    let metadata = serde_json::json!({
+        "is_template": false,
+        "is_decomposition": is_decomposition,
+        "goal": goal,
+        "steps": steps,
+        "execution_count": 0,
+        "failure_count": 0,
+        "confidence": 1.0,
+    });
+
+    let mut doc = MemoryDoc::new(
+        thread.project_id,
+        thread.user_id.clone(),
+        DocType::Plan,
+        title,
+        content,
+    );
+    doc.metadata = metadata;
+    doc.source_thread_id = Some(thread.id);
+
+    let doc_id = doc.id.0.to_string();
+
+    if let Err(e) = store.save_memory_doc(&doc).await {
+        debug!("__save_plan_doc__: failed to save: {e}");
+        return ExtFunctionResult::Return(MontyObject::None);
+    }
+
+    ExtFunctionResult::Return(MontyObject::String(doc_id))
+}
+
 // ── Helpers ─────────────────────────────────────────────────
 
 /// Build the context variables injected into the orchestrator Python.
@@ -2733,6 +2986,11 @@ fn build_orchestrator_inputs(
         "depth": thread.config.depth,
         "max_depth": thread.config.max_depth,
         "step_count": thread.step_count,
+        "max_prompt_tokens": thread.config.max_prompt_tokens,
+        "skill_token_budget": thread.config.skill_token_budget,
+        "codeact_enabled": thread.config.codeact_enabled,
+        "decomposition_depth": thread.config.decomposition_depth,
+        "plan_confidence_threshold": thread.config.plan_confidence_threshold,
     });
 
     let values = vec![

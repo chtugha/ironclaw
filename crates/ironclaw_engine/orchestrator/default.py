@@ -19,6 +19,9 @@
 #   __list_skills__()                            -> list of skill dicts
 #   __record_skill_usage__(doc_id, success)      -> None
 #   __regex_match__(pattern, text)               -> bool
+#   __set_active_skills__(skills)                -> None
+#   __apply_token_guard__(parts)                 -> {"dropped": [...], "fits": bool, "survivors": {...}, "system_prompt": str, "conversation_history": [...]}
+#   __save_plan_doc__(goal, steps, is_decomposition) -> doc_id str | None
 #
 # Context variables (injected by Rust before execution):
 #   context  - list of prior messages [{role, content}]
@@ -29,6 +32,11 @@
 
 
 import re
+
+
+def _token_count(text):
+    """Byte-based token approximation: 1 token ≈ 4 UTF-8 bytes."""
+    return int(len(text.encode("utf-8")) * 0.25)
 
 
 # ── Helper functions (self-modifiable glue) ──────────────────

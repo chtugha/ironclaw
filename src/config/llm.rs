@@ -645,6 +645,7 @@ impl LlmConfig {
             auth_path: None,
             cache_retention: CacheRetention::default(),
             unsupported_params: Vec::new(),
+            is_local: custom.is_local,
         })
     }
 
@@ -859,6 +860,7 @@ impl LlmConfig {
             CacheRetention::default()
         };
 
+        let is_local = crate::tools::mcp::config::is_localhost_url(&base_url);
         Ok(RegistryProviderConfig {
             protocol,
             provider_id: canonical_id.to_string(),
@@ -872,6 +874,7 @@ impl LlmConfig {
             auth_path: codex_auth_path,
             cache_retention,
             unsupported_params,
+            is_local,
         })
     }
 }
@@ -1709,6 +1712,7 @@ mod tests {
                 default_model: Some("my-model".to_string()),
                 api_key: Some("sk-test".to_string()),
                 builtin: false,
+                is_local: false,
             }],
             ..Default::default()
         };
@@ -1752,6 +1756,7 @@ mod tests {
                 default_model: Some("my-model".to_string()),
                 api_key: None,
                 builtin: false,
+                is_local: false,
             }],
             ..Default::default()
         };
@@ -2192,6 +2197,7 @@ mod tests {
                 default_model: Some("default-model".to_string()),
                 api_key: None,
                 builtin: false,
+                is_local: false,
             }],
             ..Default::default()
         };
@@ -2766,6 +2772,7 @@ mod tests {
                 default_model: Some("some-model".to_string()),
                 api_key: Some("sk-test".to_string()),
                 builtin: false,
+                is_local: false,
             }],
             ..Default::default()
         };
@@ -2823,6 +2830,7 @@ mod tests {
                 default_model: Some("llama3".to_string()),
                 api_key: None,
                 builtin: false,
+                is_local: true,
             }],
             ..Default::default()
         };

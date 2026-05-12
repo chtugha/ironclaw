@@ -1090,6 +1090,7 @@ mod tests {
                 default_model: Some("model-1".to_string()),
                 api_key: None, // stripped during write
                 builtin: false,
+                is_local: false,
             }],
             ..Default::default()
         };

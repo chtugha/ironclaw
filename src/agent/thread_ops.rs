@@ -2610,6 +2610,7 @@ mod tests {
             sandbox_readiness: crate::agent::routine_engine::SandboxReadiness::DisabledByConfig,
             builder: None,
             llm_backend: "nearai".to_string(),
+            is_local_backend: false,
             tenant_rates: Arc::new(crate::tenant::TenantRateRegistry::new(4, 3)),
         };
 
@@ -2635,6 +2636,9 @@ mod tests {
                 multi_tenant: false,
                 max_llm_concurrent_per_user: None,
                 max_jobs_concurrent_per_user: None,
+                max_prompt_tokens: 8192,
+                plan_confidence_threshold: 0.6,
+                codeact_enabled: None,
             },
             deps,
             channels,
@@ -3168,6 +3172,7 @@ mod tests {
             sandbox_readiness: crate::agent::routine_engine::SandboxReadiness::DisabledByConfig,
             builder: None,
             llm_backend: "nearai".to_string(),
+            is_local_backend: false,
             tenant_rates: Arc::new(crate::tenant::TenantRateRegistry::new(4, 3)),
         };
 
@@ -3193,6 +3198,9 @@ mod tests {
                 multi_tenant: false,
                 max_llm_concurrent_per_user: None,
                 max_jobs_concurrent_per_user: None,
+                max_prompt_tokens: 8192,
+                plan_confidence_threshold: 0.6,
+                codeact_enabled: None,
             },
             deps,
             Arc::new(manager),

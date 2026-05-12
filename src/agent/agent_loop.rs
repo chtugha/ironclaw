@@ -236,6 +236,8 @@ pub struct AgentDeps {
     /// Resolved LLM backend identifier (e.g., "nearai", "openai", "groq").
     /// Used by `/model` persistence to determine which env var to update.
     pub llm_backend: String,
+    /// Whether the active LLM backend is local (Ollama, loopback URL, etc.).
+    pub is_local_backend: bool,
     /// Per-tenant rate limiting registry (lazily creates rate state per user).
     pub tenant_rates: Arc<crate::tenant::TenantRateRegistry>,
 }
@@ -447,6 +449,7 @@ impl Agent {
             active_channels,
             owner_id: Some(self.deps.owner_id.clone()),
             repo_url: Some("https://github.com/nearai/ironclaw".to_string()),
+            is_local_backend: self.deps.is_local_backend,
         }
     }
     /// Build a tenant-scoped execution context for the given user.

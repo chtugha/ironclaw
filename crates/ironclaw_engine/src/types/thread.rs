@@ -156,6 +156,35 @@ pub struct ThreadConfig {
     pub depth: u32,
     /// Maximum recursion depth for rlm_query() sub-calls.
     pub max_depth: u32,
+
+    // ── Token budget for local LLM use ──
+    /// Maximum total prompt tokens per LLM call (system + skills + history + tools).
+    #[serde(default = "default_thread_max_prompt_tokens")]
+    pub max_prompt_tokens: usize,
+    /// Maximum tokens allocated to skill prompts within max_prompt_tokens.
+    #[serde(default = "default_thread_skill_token_budget")]
+    pub skill_token_budget: usize,
+    /// Override for CodeAct mode. None = auto-detect from backend.
+    #[serde(default)]
+    pub codeact_enabled: Option<bool>,
+    /// Decomposition nesting depth (0 = top-level, 1+ = sub-decomposition).
+    #[serde(default)]
+    pub decomposition_depth: u8,
+    /// Minimum plan confidence score to reuse a cached plan (0.0–1.0).
+    #[serde(default = "default_thread_plan_confidence_threshold")]
+    pub plan_confidence_threshold: f64,
+}
+
+fn default_thread_max_prompt_tokens() -> usize {
+    8192
+}
+
+fn default_thread_skill_token_budget() -> usize {
+    2048
+}
+
+fn default_thread_plan_confidence_threshold() -> f64 {
+    0.6
 }
 
 impl Default for ThreadConfig {
@@ -175,6 +204,11 @@ impl Default for ThreadConfig {
             compaction_threshold: 0.85,
             depth: 0,
             max_depth: 1,
+            max_prompt_tokens: default_thread_max_prompt_tokens(),
+            skill_token_budget: default_thread_skill_token_budget(),
+            codeact_enabled: None,
+            decomposition_depth: 0,
+            plan_confidence_threshold: default_thread_plan_confidence_threshold(),
         }
     }
 }

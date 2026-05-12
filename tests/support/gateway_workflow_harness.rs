@@ -150,6 +150,7 @@ impl GatewayWorkflowHarness {
             auth_path: None,
             cache_retention: Default::default(),
             unsupported_params: Vec::new(),
+            is_local: false,
         });
 
         let llm_session = Arc::new(LlmSessionManager::new(LlmSessionConfig::default()));
@@ -286,6 +287,7 @@ impl GatewayWorkflowHarness {
                     ironclaw::agent::routine_engine::SandboxReadiness::DisabledByConfig,
                 builder: None,
                 llm_backend: "nearai".to_string(),
+                is_local_backend: false,
                 tenant_rates: std::sync::Arc::new(ironclaw::tenant::TenantRateRegistry::new(4, 3)),
             },
             channels,

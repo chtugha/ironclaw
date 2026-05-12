@@ -163,7 +163,8 @@ Update `registry/_bundles.json`:
 
 Verification: `cargo check --workspace` passes; no remaining reference to removed registry entries in Rust source. JSON files are valid.
 
-### [ ] Step 5: Update settings and data types for token budget and local backend
+### [x] Step 5: Update settings and data types for token budget and local backend
+<!-- chat-id: 443723d2-3c57-48bc-ba88-7162a38d55d9 -->
 
 Add new fields to settings structs and engine types as specified in spec.md §2.1 modify table, §3.2.1, and §4.1–§4.4.
 
@@ -216,7 +217,8 @@ Create `migrations/V28__prompt_token_ceiling.sql`:
 
 Verification: `cargo check --workspace` compiles; all exhaustive match arms satisfied.
 
-### [ ] Step 6: Add local-backend detection and loopback auto-detection
+### [x] Step 6: Add local-backend detection and loopback auto-detection
+<!-- chat-id: 395c3c22-4621-42fa-893f-61e16b12a340 -->
 
 Implement `is_local` flag propagation and loopback auto-detection as described in spec.md §3.3.1.
 
@@ -230,7 +232,8 @@ Unit tests:
 
 Verification: `cargo check --workspace` compiles; unit tests pass.
 
-### [ ] Step 7: Implement Tier 0 system prompt and `should_use_tier0` logic
+### [x] Step 7: Implement Tier 0 system prompt and `should_use_tier0` logic
+<!-- chat-id: 2882037b-600a-4178-a6de-3ec8ee098df9 -->
 
 Create the Tier 0 compact system prompt infrastructure as described in spec.md §3.3.2–§3.3.3.
 
@@ -263,7 +266,8 @@ Unit tests:
 
 Verification: `cargo check --workspace` compiles; unit tests pass.
 
-### [ ] Step 8: Implement `TokenGuard` and `__apply_token_guard__` host function
+### [x] Step 8: Implement `TokenGuard` and `__apply_token_guard__` host function
+<!-- chat-id: f223b9ff-0ce3-4148-b89f-53c4c9eaf66b -->
 
 Implement the token budget enforcement system as described in spec.md §3.2.
 

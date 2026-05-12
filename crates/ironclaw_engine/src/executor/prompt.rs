@@ -43,6 +43,8 @@ pub struct PlatformInfo {
     pub owner_id: Option<String>,
     /// Project repository URL.
     pub repo_url: Option<String>,
+    /// Whether the active LLM backend is local (Ollama, loopback URL, etc.).
+    pub is_local_backend: bool,
 }
 
 impl PlatformInfo {
@@ -88,6 +90,9 @@ const CODEACT_POSTAMBLE: &str = include_str!("../../prompts/codeact_postamble.md
 
 /// Marker for the engine-owned CodeAct system prompt.
 const CODEACT_SYSTEM_PROMPT_MARKER: &str = "<!-- ironclaw:codeact-system-prompt -->\n";
+
+/// Marker for the engine-owned Tier 0 (local-backend) system prompt.
+pub const TIER0_SYSTEM_PROMPT_MARKER: &str = "<!-- ironclaw:tier0-system-prompt -->\n";
 const CODEACT_LEGACY_OPENING: &str = "You are an AI assistant with a Python REPL environment.";
 const CODEACT_STRATEGY_HEADING: &str = "\n## Strategy\n";
 const CODEACT_CAPABILITIES_HEADING: &str = "\n## Available capabilities (background status)\n";
@@ -261,6 +266,59 @@ pub fn upsert_codeact_system_prompt(
     true
 }
 
+/// Returns true if the content is an engine-owned system prompt (CodeAct or Tier 0).
+pub fn is_engine_system_prompt(content: &str) -> bool {
+    content.starts_with(CODEACT_SYSTEM_PROMPT_MARKER)
+        || content.starts_with(TIER0_SYSTEM_PROMPT_MARKER)
+        || is_legacy_codeact_system_prompt(content)
+}
+
+/// Replace the engine-owned system prompt content. Works for both CodeAct and Tier 0.
+///
+/// Full replacement is used whenever either prompt is Tier 0 — Tier 0 has no
+/// user-appended sections to preserve and must never receive CodeAct suffix fragments.
+/// For CodeAct→CodeAct transitions, delegates to `refresh_codeact_system_prompt`
+/// which preserves prior-knowledge and active-skills sections appended at runtime.
+pub fn refresh_engine_system_prompt(existing_content: &str, new_prompt: &str) -> String {
+    if existing_content.starts_with(TIER0_SYSTEM_PROMPT_MARKER)
+        || new_prompt.starts_with(TIER0_SYSTEM_PROMPT_MARKER)
+    {
+        new_prompt.to_string()
+    } else {
+        refresh_codeact_system_prompt(existing_content, new_prompt)
+    }
+}
+
+/// Upsert an engine-owned system prompt (CodeAct or Tier 0) into the message list.
+///
+/// Finds an existing engine-owned system message and refreshes it, or inserts
+/// a new one at position 0 if none exists. Returns true if a change was made.
+pub fn upsert_engine_system_prompt(
+    messages: &mut Vec<ThreadMessage>,
+    system_prompt: String,
+) -> bool {
+    if let Some(message) = messages.iter_mut().find(|message| {
+        message.role == MessageRole::System && is_engine_system_prompt(&message.content)
+    }) {
+        let refreshed = refresh_engine_system_prompt(&message.content, &system_prompt);
+        if message.content == refreshed {
+            return false;
+        }
+        message.content = refreshed;
+        return true;
+    }
+
+    if messages
+        .iter()
+        .any(|message| message.role == MessageRole::System)
+    {
+        return false;
+    }
+
+    messages.insert(0, ThreadMessage::system(system_prompt));
+    true
+}
+
 fn is_legacy_codeact_system_prompt(content: &str) -> bool {
     content.starts_with(CODEACT_LEGACY_OPENING)
         && content.contains("```repl")
@@ -298,6 +356,7 @@ const fn capability_status_label(status: CapabilityStatus) -> &'static str {
         CapabilityStatus::Latent => "latent",
         CapabilityStatus::Error => "error",
         CapabilityStatus::AvailableNotInstalled => "available_not_installed",
+        CapabilityStatus::Syncing => "syncing",
     }
 }
 
@@ -354,7 +413,13 @@ fn render_enabled_tool(action: &ActionDef) -> String {
 }
 
 fn compact_prompt_description(description: &str) -> String {
-    description.split_whitespace().collect::<Vec<_>>().join(" ")
+    const MAX_WORDS: usize = 60;
+    let words: Vec<&str> = description.split_whitespace().collect();
+    if words.len() <= MAX_WORDS {
+        words.join(" ")
+    } else {
+        words[..MAX_WORDS].join(" ")
+    }
 }
 
 fn render_activatable_integration(capability: &CapabilitySummary) -> String {
@@ -538,6 +603,7 @@ mod tests {
             active_channels: vec!["telegram".into(), "cli".into()],
             owner_id: Some("alice.near".into()),
             repo_url: Some("https://github.com/nearai/ironclaw".into()),
+            is_local_backend: false,
         };
         let prompt =
             build_codeact_system_prompt(&[], &[], None, ProjectId(uuid::Uuid::nil()), Some(&info))
@@ -764,5 +830,73 @@ mod tests {
         assert!(refreshed.contains("## Prior Knowledge (from completed threads)"));
         assert!(refreshed.contains("GitHub API Skill"));
         assert!(refreshed.contains("/missing"));
+    }
+
+    #[test]
+    fn is_engine_system_prompt_detects_codeact_marker() {
+        let prompt = format!("{CODEACT_SYSTEM_PROMPT_MARKER}Some codeact content");
+        assert!(is_engine_system_prompt(&prompt));
+    }
+
+    #[test]
+    fn is_engine_system_prompt_detects_tier0_marker() {
+        let prompt = format!("{TIER0_SYSTEM_PROMPT_MARKER}Some tier0 content");
+        assert!(is_engine_system_prompt(&prompt));
+    }
+
+    #[test]
+    fn is_engine_system_prompt_returns_false_for_arbitrary_text() {
+        assert!(!is_engine_system_prompt("Hello, this is a regular message."));
+        assert!(!is_engine_system_prompt(""));
+        assert!(!is_engine_system_prompt("## System\nSome content here"));
+    }
+
+    #[test]
+    fn upsert_engine_system_prompt_replaces_tier0_message() {
+        let tier0_prompt = format!("{TIER0_SYSTEM_PROMPT_MARKER}Original tier0 content.");
+        let new_tier0_prompt =
+            format!("{TIER0_SYSTEM_PROMPT_MARKER}Updated tier0 content with new plan.");
+        let mut messages = vec![
+            ThreadMessage::system(tier0_prompt),
+            ThreadMessage::user("user message"),
+        ];
+
+        assert!(upsert_engine_system_prompt(
+            &mut messages,
+            new_tier0_prompt.clone()
+        ));
+        assert_eq!(messages.len(), 2);
+        assert_eq!(messages[0].content, new_tier0_prompt);
+    }
+
+    #[test]
+    fn upsert_engine_system_prompt_no_change_returns_false() {
+        let tier0_prompt = format!("{TIER0_SYSTEM_PROMPT_MARKER}Same tier0 content.");
+        let mut messages = vec![ThreadMessage::system(tier0_prompt.clone())];
+
+        assert!(!upsert_engine_system_prompt(&mut messages, tier0_prompt));
+    }
+
+    #[test]
+    fn refresh_engine_system_prompt_full_replace_for_tier0() {
+        let existing = format!("{TIER0_SYSTEM_PROMPT_MARKER}Old content here.");
+        let new_prompt = format!("{TIER0_SYSTEM_PROMPT_MARKER}New content here with plan.");
+
+        let refreshed = refresh_engine_system_prompt(&existing, &new_prompt);
+        assert_eq!(refreshed, new_prompt);
+    }
+
+    #[test]
+    fn refresh_engine_system_prompt_codeact_to_tier0_no_suffix_bleed() {
+        let codeact_with_suffix = format!(
+            "{CODEACT_SYSTEM_PROMPT_MARKER}CodeAct body{PRIOR_KNOWLEDGE_HEADING}### [LESSON] Some rule\n{ACTIVE_SKILLS_HEADING}<skill>GitHub</skill>\n"
+        );
+        let new_tier0 = format!("{TIER0_SYSTEM_PROMPT_MARKER}Compact tier0 prompt.");
+
+        let refreshed = refresh_engine_system_prompt(&codeact_with_suffix, &new_tier0);
+
+        assert_eq!(refreshed, new_tier0, "CodeAct suffix must not bleed into Tier 0 prompt");
+        assert!(!refreshed.contains("Prior Knowledge"), "prior knowledge section must not appear in Tier 0");
+        assert!(!refreshed.contains("Active Skills"), "active skills section must not appear in Tier 0");
     }
 }

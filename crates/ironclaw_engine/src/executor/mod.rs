@@ -8,10 +8,13 @@
 pub mod context;
 pub mod loop_engine;
 pub mod orchestrator;
+pub mod planner;
 pub mod prompt;
 pub mod scripting;
 pub mod structured;
 pub(crate) mod thread_context;
+pub mod tier0_prompt;
+pub mod token_guard;
 pub mod trace;
 
 pub use loop_engine::ExecutionLoop;

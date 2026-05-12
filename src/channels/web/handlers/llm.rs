@@ -419,6 +419,14 @@ fn build_llm_providers(nearai_has_session_token: bool) -> serde_json::Value {
         entry.insert("api_key_required".into(), true.into());
         entry.insert("base_url_required".into(), false.into());
         entry.insert("can_list_models".into(), true.into());
+        entry.insert(
+            "is_local".into(),
+            crate::channels::web::features::settings::infer_is_local(
+                Some("https://cloud-api.near.ai/v1"),
+                "nearai",
+            )
+            .into(),
+        );
         // Env defaults — true if either an env API key OR a loaded session
         // token is present; the frontend treats either as "credentials
         // configured" because both reach NEAR AI as `Bearer <token>`.
@@ -451,7 +459,7 @@ fn build_llm_providers(nearai_has_session_token: bool) -> serde_json::Value {
             .ok()
             .and_then(|v| v.as_str().map(String::from))
             .unwrap_or_else(|| "open_ai_completions".to_string());
-        entry.insert("adapter".into(), serde_json::Value::String(adapter));
+        entry.insert("adapter".into(), serde_json::Value::String(adapter.clone()));
         entry.insert(
             "base_url".into(),
             serde_json::Value::String(def.default_base_url.clone().unwrap_or_default()),
@@ -465,6 +473,14 @@ fn build_llm_providers(nearai_has_session_token: bool) -> serde_json::Value {
         entry.insert("base_url_required".into(), def.base_url_required.into());
         let can_list = def.setup.as_ref().is_some_and(|s| s.can_list_models());
         entry.insert("can_list_models".into(), can_list.into());
+        entry.insert(
+            "is_local".into(),
+            crate::channels::web::features::settings::infer_is_local(
+                def.default_base_url.as_deref(),
+                &adapter,
+            )
+            .into(),
+        );
         // Env defaults
         if let Some(ref api_key_env) = def.api_key_env {
             entry.insert("has_api_key".into(), read_env(api_key_env).is_some().into());
@@ -495,6 +511,7 @@ fn build_llm_providers(nearai_has_session_token: bool) -> serde_json::Value {
         entry.insert("api_key_required".into(), false.into());
         entry.insert("base_url_required".into(), false.into());
         entry.insert("can_list_models".into(), false.into());
+        entry.insert("is_local".into(), false.into());
         providers.push(serde_json::Value::Object(entry));
     }
 

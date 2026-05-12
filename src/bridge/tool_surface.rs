@@ -109,7 +109,8 @@ const fn fallback_assignment(status: CapabilityStatus) -> SurfaceAssignment {
         | CapabilityStatus::Inactive
         | CapabilityStatus::Latent
         | CapabilityStatus::AvailableNotInstalled
-        | CapabilityStatus::ReadyScoped => SurfaceAssignment::capabilities_only(),
+        | CapabilityStatus::ReadyScoped
+        | CapabilityStatus::Syncing => SurfaceAssignment::capabilities_only(),
         CapabilityStatus::Ready | CapabilityStatus::Error => SurfaceAssignment::neither(),
     }
 }

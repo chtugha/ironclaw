@@ -1841,6 +1841,7 @@ impl MissionManager {
                 MissionCadence::OnEvent { .. }
                 | MissionCadence::OnSystemEvent { .. }
                 | MissionCadence::Webhook { .. } => false,
+                MissionCadence::Idle { .. } => false,
             };
 
             if !should_fire {

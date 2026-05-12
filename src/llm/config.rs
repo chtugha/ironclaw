@@ -101,6 +101,8 @@ pub struct RegistryProviderConfig {
     /// Supported keys: `"temperature"`, `"max_tokens"`, `"stop_sequences"`.
     /// Listed parameters are stripped from requests before sending to avoid 400 errors.
     pub unsupported_params: Vec<String>,
+    /// Whether this is a local backend (Ollama, loopback URL, or explicitly flagged by the user).
+    pub is_local: bool,
 }
 
 /// Configuration for OpenAI Codex (ChatGPT subscription OAuth).
@@ -246,6 +248,20 @@ impl LlmConfig {
                 .map(|cfg| cfg.model.clone())
                 .unwrap_or_else(|| self.nearai.model.clone()),
         }
+    }
+
+    /// Returns `true` when the active backend is local:
+    ///
+    /// - backend is `"ollama"`, or
+    /// - the resolved provider has `is_local: true` (explicitly set by the user), or
+    /// - the resolved provider's `base_url` is a loopback address.
+    pub fn is_local(&self) -> bool {
+        if self.backend == "ollama" {
+            return true;
+        }
+        self.provider
+            .as_ref()
+            .is_some_and(|p| p.is_local || crate::tools::mcp::config::is_localhost_url(&p.base_url))
     }
 }
 

@@ -35,6 +35,9 @@ pub struct CustomLlmProviderSettings {
     /// Whether this is a built-in provider (should always be false for custom).
     #[serde(default)]
     pub builtin: bool,
+    /// Whether this provider is a local backend (e.g. Ollama, loopback URL).
+    #[serde(default)]
+    pub is_local: bool,
 }
 
 impl std::fmt::Debug for CustomLlmProviderSettings {
@@ -47,6 +50,7 @@ impl std::fmt::Debug for CustomLlmProviderSettings {
             .field("default_model", &self.default_model)
             .field("api_key", &self.api_key.as_ref().map(|_| "[REDACTED]"))
             .field("builtin", &self.builtin)
+            .field("is_local", &self.is_local)
             .finish()
     }
 }
@@ -262,6 +266,10 @@ pub struct Settings {
     #[serde(default)]
     pub tool_permissions:
         std::collections::HashMap<String, crate::tools::permissions::PermissionState>,
+
+    /// Local search tool configuration.
+    #[serde(default)]
+    pub local_search: LocalSearchSettings,
 }
 
 /// Source for the secrets master key.
@@ -592,6 +600,26 @@ pub struct AgentSettings {
     /// Maximum tokens per job (0 = unlimited).
     #[serde(default)]
     pub max_tokens_per_job: u64,
+
+    /// Maximum total prompt tokens for a single LLM call (0 = unlimited).
+    #[serde(default = "default_max_prompt_tokens")]
+    pub max_prompt_tokens: usize,
+
+    /// Minimum plan confidence score to reuse a cached plan (0.0–1.0).
+    #[serde(default = "default_plan_confidence_threshold")]
+    pub plan_confidence_threshold: f64,
+
+    /// Override for CodeAct mode. None = auto-detect from backend.
+    #[serde(default)]
+    pub codeact_enabled: Option<bool>,
+}
+
+fn default_max_prompt_tokens() -> usize {
+    8192
+}
+
+fn default_plan_confidence_threshold() -> f64 {
+    0.6
 }
 
 fn default_agent_name() -> String {
@@ -649,6 +677,9 @@ impl Default for AgentSettings {
             auto_approve_tools: false,
             default_timezone: default_timezone(),
             max_tokens_per_job: 0,
+            max_prompt_tokens: default_max_prompt_tokens(),
+            plan_confidence_threshold: default_plan_confidence_threshold(),
+            codeact_enabled: None,
         }
     }
 }
@@ -948,7 +979,7 @@ fn default_skills_max_active() -> usize {
 }
 
 fn default_skills_max_context_tokens() -> usize {
-    4000
+    2048
 }
 
 impl Default for SkillsSettings {
@@ -959,6 +990,15 @@ impl Default for SkillsSettings {
             max_context_tokens: default_skills_max_context_tokens(),
         }
     }
+}
+
+/// Local file search tool configuration.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct LocalSearchSettings {
+    /// When false (default), the `search_files` action is scoped to the active
+    /// workspace only. When true, the agent may search the whole filesystem.
+    #[serde(default)]
+    pub allow_global_scope: bool,
 }
 
 /// Memory hygiene configuration.
@@ -2843,6 +2883,7 @@ mod tests {
             default_model: Some("gpt-4".to_string()),
             api_key: Some("sk-super-secret-key".to_string()),
             builtin: false,
+            is_local: false,
         };
         let debug_output = format!("{:?}", provider);
         assert!(

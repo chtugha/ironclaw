@@ -2204,6 +2204,13 @@ fn parse_cadence(
             event_type,
             filters: std::collections::HashMap::new(),
         })
+    } else if lower.starts_with("idle:") {
+        let rest = trimmed["idle:".len()..].trim();
+        let threshold_secs: u64 = rest.parse().map_err(|_| {
+            "idle cadence requires a numeric threshold in seconds after 'idle:', \
+             e.g. 'idle:300'"
+        })?;
+        Ok(MissionCadence::Idle { threshold_secs })
     } else if lower.starts_with("webhook:") {
         // Extract from original to preserve case in webhook paths.
         let path = trimmed["webhook:".len()..].trim().to_string();
@@ -2225,7 +2232,7 @@ fn parse_cadence(
         Err(format!(
             "unrecognized cadence '{s}'. Use 'manual', a cron expression \
              (e.g. '0 9 * * *'), 'event:<channel>:<pattern>' \
-             (e.g. 'event:telegram:.*'), or 'webhook:<path>'"
+             (e.g. 'event:telegram:.*'), 'webhook:<path>', or 'idle:<seconds>'"
         ))
     }
 }
@@ -2737,6 +2744,7 @@ fn cadence_to_round_trip_string(
         }
         MissionCadence::Webhook { path, .. } => format!("webhook:{path}"),
         MissionCadence::Manual => "manual".to_string(),
+        MissionCadence::Idle { threshold_secs } => format!("idle:{threshold_secs}"),
     }
 }
 

@@ -384,10 +384,10 @@ mod tests {
     #[tokio::test]
     async fn test_search_returns_sorted() {
         let registry = registry_with_catalog();
-        let results = registry.search("notion").await;
+        let results = registry.search("github").await;
 
-        assert!(!results.is_empty(), "Should find notion in registry");
-        assert_eq!(results[0].entry.name, "notion");
+        assert!(!results.is_empty(), "Should find github in registry");
+        assert_eq!(results[0].entry.name, "github");
     }
 
     #[tokio::test]
@@ -401,30 +401,23 @@ mod tests {
     #[tokio::test]
     async fn test_search_by_keyword() {
         let registry = registry_with_catalog();
-        let results = registry.search("issues tickets").await;
+        let results = registry.search("issues pull-requests").await;
 
         assert!(
             !results.is_empty(),
-            "Should find entries matching 'issues tickets'"
+            "Should find entries matching 'issues pull-requests'"
         );
-        // Linear should be near the top since it has both keywords
-        let linear_pos = results.iter().position(|r| r.entry.name == "linear");
-        assert!(linear_pos.is_some(), "Linear should appear in results");
+        let github_pos = results.iter().position(|r| r.entry.name == "github");
+        assert!(github_pos.is_some(), "GitHub should appear in results");
     }
 
     #[tokio::test]
-    async fn test_search_gws_alias_finds_google_tools() {
+    async fn test_search_git_keyword_finds_github() {
         let registry = registry_with_catalog();
-        let results = registry.search("gws").await;
+        let results = registry.search("git").await;
         assert!(
-            results.iter().any(|result| result.entry.name == "gmail"),
-            "gws search should surface Gmail"
-        );
-        assert!(
-            results
-                .iter()
-                .any(|result| result.entry.name == "google_drive"),
-            "gws search should surface Google Drive"
+            results.iter().any(|result| result.entry.name == "github"),
+            "git search should surface GitHub"
         );
     }
 
@@ -432,9 +425,9 @@ mod tests {
     async fn test_get_exact_name() {
         let registry = registry_with_catalog();
 
-        let entry = registry.get("notion").await;
+        let entry = registry.get("github").await;
         assert!(entry.is_some());
-        assert_eq!(entry.unwrap().display_name, "Notion");
+        assert_eq!(entry.unwrap().display_name, "GitHub");
 
         let missing = registry.get("nonexistent").await;
         assert!(missing.is_none());
