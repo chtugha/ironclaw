@@ -39,6 +39,12 @@ def _token_count(text):
     return int(len(text.encode("utf-8")) * 0.25)
 
 
+def _do_transition(target, reason, config=None):
+    if config and config.get("_suppress_transitions"):
+        return
+    __transition_to__(target, reason)
+
+
 # ── Helper functions (self-modifiable glue) ──────────────────
 # Defined before run_loop so they are in scope when called.
 
@@ -858,18 +864,16 @@ def should_invalidate_plan(user_message, current_plan, goal):
 def run_decomposition_loop(subtasks, original_goal, actions, config, state):
     """Execute a decomposed plan by running each subtask in sequence.
 
-    Each subtask runs a full run_loop which calls __transition_to__ internally.
-    After the first subtask completes, the thread state machine is in Completed
-    and does not allow Completed→Completed or Completed→Failed transitions.
-    The run_loop call for each subtask is wrapped in try/except because
-    __transition_to__ inside run_loop (for the 2nd+ subtask) raises RuntimeError
-    which propagates as a Python exception up through run_loop — if uncaught it
-    would reach Rust and crash the orchestrator. All __transition_to__ calls
-    within this function itself are also wrapped in try/except. Subtask outcomes
-    are tracked via complete_result regardless of whether transitions succeed.
+    Subtask run_loop calls use _suppress_transitions to prevent state machine
+    conflicts (the thread can only transition once, but multiple subtasks would
+    each try to transition). The decomposition loop itself manages the single
+    overall transition. All _do_transition calls within this function are
+    wrapped in try/except for safety.
     """
     subtask_config = dict(config)
     subtask_config["decomposition_depth"] = config.get("decomposition_depth", 0) + 1
+    subtask_config["_suppress_transitions"] = True
+    subtask_config["step_count"] = 0
 
     decomp_plan_doc_id = __save_plan_doc__(original_goal, subtasks, True)
     if decomp_plan_doc_id:
@@ -889,14 +893,21 @@ def run_decomposition_loop(subtasks, original_goal, actions, config, state):
             subtask_result = run_loop([], subtask, actions, subtask_state, subtask_config)
         except Exception as exc:
             try:
-                __transition_to__("failed", "subtask exception: " + str(exc))
+                _do_transition("failed", "subtask exception: " + str(exc), config)
             except Exception:
                 pass
             return complete_result(state, "failed", error="Subtask raised: " + str(exc))
 
-        if subtask_result.get("outcome") not in ("completed",):
+        subtask_outcome = subtask_result.get("outcome")
+        if subtask_outcome == "stopped":
             try:
-                __transition_to__("failed", "subtask failed: " + subtask)
+                _do_transition("completed", "stopped by signal", config)
+            except Exception:
+                pass
+            return complete_result(state, "stopped")
+        if subtask_outcome not in ("completed",):
+            try:
+                _do_transition("failed", "subtask failed: " + subtask, config)
             except Exception:
                 pass
             return complete_result(state, "failed", error="Subtask failed: " + subtask)
@@ -905,7 +916,7 @@ def run_decomposition_loop(subtasks, original_goal, actions, config, state):
             state["_last_response"] = str(subtask_result["response"])[:800]
 
     try:
-        __transition_to__("completed", "all subtasks completed")
+        _do_transition("completed", "all subtasks completed", config)
     except Exception:
         pass
     return complete_result(
@@ -1046,9 +1057,13 @@ def run_loop(context, goal, actions, state, config):
                 break
     working_messages = ensure_working_messages(state, context)
 
+    parent_context = state.pop("_context_from_parent", None)
+    if parent_context:
+        append_system_append(working_messages, "Context from previous step:\n" + parent_context)
+
     plan_steps, plan_source, plan_docs = run_planning_phase(goal, actions, config, state)
     if plan_source == "failed":
-        __transition_to__("failed", "planning failed")
+        _do_transition("failed", "planning failed", config)
         _write_last_response(state, working_messages)
         return complete_result(state, "failed", error="Could not generate a plan for the given goal.")
     if plan_source == "decompose":
@@ -1061,7 +1076,7 @@ def run_loop(context, goal, actions, state, config):
         # 1. Check signals
         signal = __check_signals__()
         if signal == "stop":
-            __transition_to__("completed", "stopped by signal")
+            _do_transition("completed", "stopped by signal", config)
             _write_last_response(state, working_messages)
             return complete_result(state, "stopped")
         if signal and isinstance(signal, dict) and "inject" in signal:
@@ -1074,7 +1089,7 @@ def run_loop(context, goal, actions, state, config):
                 new_steps, new_source, _ = run_planning_phase(injected_text, actions, config, state)
                 if new_source == "failed":
                     _write_last_response(state, working_messages)
-                    __transition_to__("failed", "re-planning failed after goal change")
+                    _do_transition("failed", "re-planning failed after goal change", config)
                     return complete_result(state, "failed", error="Could not re-plan for the updated goal.")
                 elif new_source == "decompose":
                     _write_last_response(state, working_messages)
@@ -1094,15 +1109,15 @@ def run_loop(context, goal, actions, state, config):
         # 2. Check budget
         budget = __check_budget__()
         if budget.get("tokens_remaining", 1) <= 0:
-            __transition_to__("completed", "token budget exhausted")
+            _do_transition("completed", "token budget exhausted", config)
             _write_last_response(state, working_messages)
             return complete_result(state, "completed", "Token budget exhausted.")
         if budget.get("time_remaining_ms", 1) <= 0:
-            __transition_to__("completed", "time budget exhausted")
+            _do_transition("completed", "time budget exhausted", config)
             _write_last_response(state, working_messages)
             return complete_result(state, "completed", "Time budget exhausted.")
         if budget.get("usd_remaining") is not None and budget["usd_remaining"] <= 0:
-            __transition_to__("completed", "cost budget exhausted")
+            _do_transition("completed", "cost budget exhausted", config)
             _write_last_response(state, working_messages)
             return complete_result(state, "completed", "Cost budget exhausted.")
 
@@ -1266,7 +1281,7 @@ def run_loop(context, goal, actions, state, config):
             # Check for FINAL()
             final_answer = extract_final(text)
             if final_answer is not None:
-                __transition_to__("completed", "FINAL() in text")
+                _do_transition("completed", "FINAL() in text", config)
                 _write_last_response(state, working_messages)
                 return complete_result(state, "completed", final_answer)
 
@@ -1309,7 +1324,7 @@ def run_loop(context, goal, actions, state, config):
                 consecutive_nudges = 0
 
             # Plain text response - done
-            __transition_to__("completed", "text response")
+            _do_transition("completed", "text response", config)
             _write_last_response(state, working_messages)
             return complete_result(state, "completed", text)
 
@@ -1334,7 +1349,7 @@ def run_loop(context, goal, actions, state, config):
 
             # Check for FINAL() in code output
             if result.get("final_answer") is not None:
-                __transition_to__("completed", "FINAL() in code")
+                _do_transition("completed", "FINAL() in code", config)
                 _write_last_response(state, working_messages)
                 return complete_result(state, "completed", result["final_answer"])
 
@@ -1350,7 +1365,7 @@ def run_loop(context, goal, actions, state, config):
                     "compaction_count": state.get("compaction_count", 0),
                     "obligation_nudge_count": state.get("_obligation_nudge_count", 0),
                 })
-                __transition_to__("waiting", "gate paused: " + gate.get("gate_name", "unknown"))
+                _do_transition("waiting", "gate paused: " + gate.get("gate_name", "unknown"), config)
                 return {
                     "outcome": "gate_paused",
                     "state": state,
@@ -1372,7 +1387,7 @@ def run_loop(context, goal, actions, state, config):
                     "obligation_nudge_count": state.get("_obligation_nudge_count", 0),
                 })
                 if approval.get("need_authentication"):
-                    __transition_to__("waiting", "authentication needed")
+                    _do_transition("waiting", "authentication needed", config)
                     return {
                         "outcome": "need_authentication",
                         "state": state,
@@ -1381,7 +1396,7 @@ def run_loop(context, goal, actions, state, config):
                         "call_id": approval.get("call_id", ""),
                         "parameters": approval.get("parameters", {}),
                     }
-                __transition_to__("waiting", "approval needed")
+                _do_transition("waiting", "approval needed", config)
                 return {
                     "outcome": "need_approval",
                     "state": state,
@@ -1394,7 +1409,7 @@ def run_loop(context, goal, actions, state, config):
             if result.get("had_error"):
                 consecutive_errors += 1
                 if max_consecutive_errors is not None and consecutive_errors >= max_consecutive_errors:
-                    __transition_to__("failed", "too many consecutive errors")
+                    _do_transition("failed", "too many consecutive errors", config)
                     _write_last_response(state, working_messages)
                     return complete_result(
                         state,
@@ -1517,7 +1532,7 @@ def run_loop(context, goal, actions, state, config):
                     gate = r
                     # Get action info from the original call or the result
                     orig_call = executable_calls[r_idx] if r_idx < len(executable_calls) else {}
-                    __transition_to__("waiting", "gate paused: " + gate.get("gate_name", "unknown"))
+                    _do_transition("waiting", "gate paused: " + gate.get("gate_name", "unknown"), config)
                     return {
                         "outcome": "gate_paused",
                         "state": state,
@@ -1536,7 +1551,7 @@ def run_loop(context, goal, actions, state, config):
                         "compaction_count": state.get("compaction_count", 0),
                         "obligation_nudge_count": state.get("_obligation_nudge_count", 0),
                     })
-                    __transition_to__("waiting", "authentication needed")
+                    _do_transition("waiting", "authentication needed", config)
                     return {
                         "outcome": "need_authentication",
                         "state": state,
@@ -1554,7 +1569,7 @@ def run_loop(context, goal, actions, state, config):
                         "compaction_count": state.get("compaction_count", 0),
                         "obligation_nudge_count": state.get("_obligation_nudge_count", 0),
                     })
-                    __transition_to__("waiting", "approval needed")
+                    _do_transition("waiting", "approval needed", config)
                     return {
                         "outcome": "need_approval",
                         "state": state,
@@ -1602,7 +1617,7 @@ def run_loop(context, goal, actions, state, config):
                             truncated=truncated,
                             original_length=len(response.get("content", "") or ""),
                         )
-                __transition_to__("completed", "FINAL via tool_calls")
+                _do_transition("completed", "FINAL via tool_calls", config)
                 _write_last_response(state, working_messages)
                 return complete_result(state, "completed", str(answer))
 
@@ -1616,7 +1631,7 @@ def run_loop(context, goal, actions, state, config):
                 consecutive_action_errors += 1
 
             if max_consecutive_errors is not None and consecutive_action_errors > 0 and consecutive_action_errors >= max_consecutive_errors + 2:
-                __transition_to__("failed", "too many consecutive action errors")
+                _do_transition("failed", "too many consecutive action errors", config)
                 _write_last_response(state, working_messages)
                 return complete_result(
                     state,
@@ -1643,7 +1658,7 @@ def run_loop(context, goal, actions, state, config):
             })
 
     # Max iterations reached
-    __transition_to__("completed", "max iterations reached")
+    _do_transition("completed", "max iterations reached", config)
     _write_last_response(state, working_messages)
     return complete_result(state, "max_iterations")
 
