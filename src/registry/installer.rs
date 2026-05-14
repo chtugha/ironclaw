@@ -843,6 +843,13 @@ mod tests {
             tags: Vec::new(),
             url: None,
             auth: None,
+            runtime: None,
+            command: None,
+            args: Vec::new(),
+            env: std::collections::HashMap::new(),
+            auto_launch: false,
+            requires: None,
+            install_hint: None,
         }
     }
 

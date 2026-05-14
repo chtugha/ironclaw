@@ -1079,6 +1079,12 @@ fn is_globally_shared(doc: &MemoryDoc) -> bool {
     doc.title == ORCHESTRATOR_MAIN_TITLE
         || doc.title == ORCHESTRATOR_FAILURES_TITLE
         || doc.title == PREAMBLE_OVERLAY_TITLE
+        || (doc.doc_type == DocType::Plan
+            && doc
+                .metadata
+                .get("is_template")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false))
 }
 
 /// Validate orchestrator content before persisting.

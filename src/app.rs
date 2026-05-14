@@ -1309,6 +1309,18 @@ impl AppBuilder {
         // that every tool name is known.  Existing entries are never overwritten.
         seed_tool_permissions(&tools, self.db.as_ref(), &self.config.owner_id).await;
 
+        // Seed built-in plan templates into the workspace-backed store so
+        // agents can retrieve them via __retrieve_docs__.
+        {
+            let hybrid = Arc::new(crate::bridge::HybridStore::new(workspace.clone()));
+            hybrid.load_state_from_workspace().await;
+            let mem_store = ironclaw_engine::MemoryStore::new(hybrid);
+            let seeded = mem_store.ensure_system_docs().await;
+            if seeded > 0 {
+                tracing::debug!("Seeded {} built-in plan template(s)", seeded);
+            }
+        }
+
         Ok(AppComponents {
             config: self.config,
             db: self.db,

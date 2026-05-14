@@ -2091,6 +2091,10 @@ impl ExtensionManager {
                             .await
                             .map(|e| e.display_name)
                             .or_else(|| Some(server.name.clone()));
+                        let needs_setup = !server.requires_bins.is_empty()
+                            && server.requires_bins.iter().any(|bin| {
+                                !crate::tools::mcp::url_filter::binary_available(bin)
+                            });
                         extensions.push(InstalledExtension {
                             name: server.name.clone(),
                             kind: ExtensionKind::McpServer,
@@ -2100,7 +2104,7 @@ impl ExtensionManager {
                             authenticated,
                             active,
                             tools,
-                            needs_setup: false,
+                            needs_setup,
                             has_auth,
                             installed: true,
                             activation_error: None,
@@ -3075,6 +3079,25 @@ impl ExtensionManager {
                 let url = match source {
                     ExtensionSource::McpUrl { url } => url.clone(),
                     ExtensionSource::Discovered { url } => url.clone(),
+                    ExtensionSource::McpStdio {
+                        command,
+                        args,
+                        env,
+                        requires_bins,
+                        install_hint,
+                    } => {
+                        return self
+                            .install_mcp_stdio(
+                                &entry.name,
+                                command,
+                                args.clone(),
+                                env.clone(),
+                                requires_bins.clone(),
+                                install_hint.as_deref(),
+                                user_id,
+                            )
+                            .await;
+                    }
                     _ => {
                         return Err(ExtensionError::InstallFailed(
                             "Registry entry for MCP server has no URL".to_string(),
@@ -3270,6 +3293,59 @@ impl ExtensionManager {
                 "MCP server '{}' installed. Run auth next to authenticate.",
                 name
             ),
+        })
+    }
+
+    async fn install_mcp_stdio(
+        &self,
+        name: &str,
+        command: &str,
+        args: Vec<String>,
+        env: std::collections::HashMap<String, String>,
+        requires_bins: Vec<String>,
+        install_hint: Option<&str>,
+        user_id: &str,
+    ) -> Result<InstallResult, ExtensionError> {
+        if self.get_mcp_server(name, user_id).await.is_ok() {
+            return Err(ExtensionError::AlreadyInstalled(name.to_string()));
+        }
+
+        let missing: Vec<&str> = requires_bins
+            .iter()
+            .filter(|bin| !crate::tools::mcp::url_filter::binary_available(bin))
+            .map(String::as_str)
+            .collect();
+        if !missing.is_empty() {
+            let hint = install_hint.unwrap_or("Install the required runtime to enable this tool.");
+            return Err(ExtensionError::InstallFailed(format!(
+                "Required binaries not found in PATH: {}. {}",
+                missing.join(", "),
+                hint
+            )));
+        }
+
+        let config = McpServerConfig::new_stdio_with_requirements(
+            name,
+            command,
+            args,
+            env,
+            requires_bins,
+            install_hint.map(str::to_owned),
+        );
+        config
+            .validate()
+            .map_err(|e| ExtensionError::InvalidUrl(e.to_string()))?;
+
+        self.add_mcp_server(config, user_id)
+            .await
+            .map_err(|e| ExtensionError::Config(e.to_string()))?;
+
+        tracing::info!("Installed stdio MCP server '{}' (command: {})", name, command);
+
+        Ok(InstallResult {
+            name: name.to_string(),
+            kind: ExtensionKind::McpServer,
+            message: format!("MCP server '{}' installed.", name),
         })
     }
 
@@ -5554,6 +5630,26 @@ impl ExtensionManager {
             .get_mcp_server(name, user_id)
             .await
             .map_err(|e| ExtensionError::NotInstalled(e.to_string()))?;
+
+        if !server.requires_bins.is_empty() {
+            let missing: Vec<&str> = server
+                .requires_bins
+                .iter()
+                .filter(|bin| !crate::tools::mcp::url_filter::binary_available(bin))
+                .map(String::as_str)
+                .collect();
+            if !missing.is_empty() {
+                let hint = server
+                    .install_hint
+                    .as_deref()
+                    .unwrap_or("Install the required runtime to enable this tool.");
+                return Err(ExtensionError::ActivationFailed(format!(
+                    "Required binaries not found in PATH: {}. {}",
+                    missing.join(", "),
+                    hint
+                )));
+            }
+        }
 
         let client = crate::tools::mcp::create_client_from_config(
             server.clone(),

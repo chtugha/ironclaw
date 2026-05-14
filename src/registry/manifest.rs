@@ -46,7 +46,7 @@ pub struct ExtensionManifest {
     #[serde(default)]
     pub tags: Vec<String>,
 
-    /// MCP server URL. Only present for `McpServer` manifests.
+    /// MCP server URL. Only present for HTTP `McpServer` manifests.
     #[serde(default)]
     pub url: Option<String>,
 
@@ -54,6 +54,42 @@ pub struct ExtensionManifest {
     /// Only present for `McpServer` manifests.
     #[serde(default)]
     pub auth: Option<String>,
+
+    /// Transport runtime for stdio MCP servers (e.g. `"mcp_stdio"`).
+    #[serde(default)]
+    pub runtime: Option<String>,
+
+    /// Command to execute for stdio MCP servers (e.g. `"npx"`).
+    #[serde(default)]
+    pub command: Option<String>,
+
+    /// Arguments for the stdio command.
+    #[serde(default)]
+    pub args: Vec<String>,
+
+    /// Extra environment variables for the stdio child process.
+    #[serde(default)]
+    pub env: std::collections::HashMap<String, String>,
+
+    /// Whether the MCP server should be launched automatically on bundle enable.
+    #[serde(default)]
+    pub auto_launch: bool,
+
+    /// System binary requirements for the server to function.
+    #[serde(default)]
+    pub requires: Option<ManifestRequires>,
+
+    /// Human-readable setup hint shown when required binaries are missing.
+    #[serde(default)]
+    pub install_hint: Option<String>,
+}
+
+/// System binary requirements declared in a manifest.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct ManifestRequires {
+    /// Executables that must be present in PATH.
+    #[serde(default)]
+    pub bins: Vec<String>,
 }
 
 /// Extension kind as declared in manifests.
@@ -183,6 +219,42 @@ impl ExtensionManifest {
 
     /// Build a [`RegistryEntry`] for an MCP server manifest.
     fn to_mcp_registry_entry(&self) -> Option<RegistryEntry> {
+        let is_stdio = self.runtime.as_deref() == Some("mcp_stdio");
+
+        if is_stdio {
+            let command = match &self.command {
+                Some(c) => c.clone(),
+                None => {
+                    tracing::warn!(
+                        "Stdio MCP server manifest '{}' is missing 'command' field, skipping",
+                        self.name
+                    );
+                    return None;
+                }
+            };
+            return Some(RegistryEntry {
+                name: self.name.clone(),
+                display_name: self.display_name.clone(),
+                kind: ExtensionKind::McpServer,
+                description: self.description.clone(),
+                keywords: self.keywords.clone(),
+                source: ExtensionSource::McpStdio {
+                    command,
+                    args: self.args.clone(),
+                    env: self.env.clone(),
+                    requires_bins: self
+                        .requires
+                        .as_ref()
+                        .map(|r| r.bins.clone())
+                        .unwrap_or_default(),
+                    install_hint: self.install_hint.clone(),
+                },
+                fallback_source: None,
+                auth_hint: AuthHint::None,
+                version: self.version.clone(),
+            });
+        }
+
         let url = match &self.url {
             Some(u) => u.clone(),
             None => {

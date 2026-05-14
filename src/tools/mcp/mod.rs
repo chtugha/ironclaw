@@ -39,6 +39,7 @@ mod protocol;
 pub mod session;
 pub(crate) mod stdio_transport;
 pub(crate) mod transport;
+pub(crate) mod url_filter;
 #[cfg(unix)]
 pub(crate) mod unix_transport;
 

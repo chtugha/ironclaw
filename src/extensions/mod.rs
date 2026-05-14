@@ -89,6 +89,23 @@ pub struct RegistryEntry {
 pub enum ExtensionSource {
     /// URL to a hosted MCP server.
     McpUrl { url: String },
+    /// Stdio-launched MCP server (spawned as a local child process).
+    McpStdio {
+        /// Executable to run (e.g. "npx").
+        command: String,
+        /// Command-line arguments.
+        #[serde(default)]
+        args: Vec<String>,
+        /// Extra environment variables for the child process.
+        #[serde(default)]
+        env: std::collections::HashMap<String, String>,
+        /// System binaries that must be present in PATH before launch.
+        #[serde(default)]
+        requires_bins: Vec<String>,
+        /// Human-readable hint shown when required binaries are missing.
+        #[serde(default)]
+        install_hint: Option<String>,
+    },
     /// Downloadable WASM binary.
     WasmDownload {
         wasm_url: String,

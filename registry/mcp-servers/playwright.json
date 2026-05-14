@@ -1,0 +1,15 @@
+{
+  "name": "playwright",
+  "display_name": "Local Browser",
+  "kind": "mcp_server",
+  "description": "Browser automation via Playwright MCP. Enables web browsing, search, and page interaction for local LLM use.",
+  "keywords": ["browser", "web", "search", "navigate", "screenshot", "playwright"],
+  "runtime": "mcp_stdio",
+  "auto_launch": true,
+  "command": "npx",
+  "args": ["@playwright/mcp@latest", "--no-file-access"],
+  "env": {"PLAYWRIGHT_BROWSERS_PATH": "0"},
+  "requires": {"bins": ["node", "npx"]},
+  "install_hint": "Install Node.js from https://nodejs.org to enable browser tools.",
+  "tags": ["default", "local", "browser"]
+}

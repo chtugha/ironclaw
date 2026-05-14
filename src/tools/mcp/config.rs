@@ -67,6 +67,18 @@ pub struct McpServerConfig {
     /// while the server is currently inactive.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub cached_tools: Vec<McpTool>,
+
+    /// System binaries required by this server (e.g. `["node", "npx"]`).
+    ///
+    /// Checked at startup: if any listed binary is absent from PATH, the
+    /// capability is marked `NeedsSetup` rather than attempting to spawn the
+    /// process (which would produce a less-informative error).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub requires_bins: Vec<String>,
+
+    /// Human-readable hint shown in the UI when `requires_bins` are missing.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub install_hint: Option<String>,
 }
 
 fn default_true() -> bool {
@@ -85,6 +97,8 @@ impl McpServerConfig {
             enabled: true,
             description: None,
             cached_tools: Vec::new(),
+            requires_bins: Vec::new(),
+            install_hint: None,
         }
     }
 
@@ -108,6 +122,35 @@ impl McpServerConfig {
             enabled: true,
             description: None,
             cached_tools: Vec::new(),
+            requires_bins: Vec::new(),
+            install_hint: None,
+        }
+    }
+
+    /// Create a new stdio transport MCP server configuration with binary requirements.
+    pub fn new_stdio_with_requirements(
+        name: impl Into<String>,
+        command: impl Into<String>,
+        args: Vec<String>,
+        env: HashMap<String, String>,
+        requires_bins: Vec<String>,
+        install_hint: Option<String>,
+    ) -> Self {
+        Self {
+            name: name.into(),
+            url: String::new(),
+            transport: Some(McpTransportConfig::Stdio {
+                command: command.into(),
+                args,
+                env,
+            }),
+            headers: HashMap::new(),
+            oauth: None,
+            enabled: true,
+            description: None,
+            cached_tools: Vec::new(),
+            requires_bins,
+            install_hint,
         }
     }
 
@@ -124,6 +167,8 @@ impl McpServerConfig {
             enabled: true,
             description: None,
             cached_tools: Vec::new(),
+            requires_bins: Vec::new(),
+            install_hint: None,
         }
     }
 

@@ -929,6 +929,8 @@ impl Tool for McpToolWrapper {
         // explicit nulls for fields that should simply be absent.
         let params = strip_top_level_nulls(params);
 
+        super::url_filter::reject_if_file_url(&params)?;
+
         let client = self
             .client_store
             .get(&ctx.user_id, &self.server_name)

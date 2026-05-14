@@ -305,7 +305,8 @@ Unit tests for `TokenGuard`:
 
 Verification: `cargo check --workspace` compiles; unit tests pass.
 
-### [ ] Step 9: Implement `PlanAnchor` and `planner.rs` (Rust side)
+### [x] Step 9: Implement `PlanAnchor` and `planner.rs` (Rust side)
+<!-- chat-id: 0e4818f7-ba08-4ef2-b120-230d40bde3bd -->
 
 Add the `PlanAnchor` struct and plan-side Rust support as described in spec.md §3.5.1–§3.5.3.
 
@@ -324,7 +325,8 @@ Unit tests:
 
 Verification: `cargo check --workspace` compiles; unit tests pass.
 
-### [ ] Step 10: Implement plan confidence tracking (`skill_tracker.rs` + `default.py`)
+### [x] Step 10: Implement plan confidence tracking (`skill_tracker.rs` + `default.py`)
+<!-- chat-id: d3aa1b82-7a92-4f47-aae6-99aa460eebf5 -->
 
 Extend `SkillTracker::record_usage()` to accept `DocType::Plan` docs and implement plan tracking call in the Python orchestrator as described in spec.md §3.5.4.
 
@@ -343,7 +345,8 @@ Unit tests for `skill_tracker.rs`:
 
 Verification: `cargo check --workspace` compiles; unit tests pass.
 
-### [ ] Step 11: Implement planning pipeline in `default.py`
+### [x] Step 11: Implement planning pipeline in `default.py`
+<!-- chat-id: af033abf-5574-4252-9c6e-6c639464aaa8 -->
 
 Add the full plan-first execution pipeline to the Python orchestrator as described in spec.md §3.5.1–§3.5.3, §3.5.6–§3.5.7.
 
@@ -372,7 +375,7 @@ Changes to `crates/ironclaw_engine/orchestrator/default.py`:
 
 Verification: Python syntax check (`python3 -m py_compile default.py`). Manual trace of planning + decomposition flow.
 
-### [ ] Step 12: Implement plan templates loader
+### [x] Step 12: Implement plan templates loader
 
 Load bundled plan templates at startup as described in spec.md §3.5.5.
 
@@ -387,7 +390,7 @@ Unit tests:
 
 Verification: `cargo check --workspace` compiles; unit tests pass.
 
-### [ ] Step 13: Implement `MissionManager` idle mode
+### [x] Step 13: Implement `MissionManager` idle mode
 
 Add the `Idle` cadence and `is_system_idle()` logic as described in spec.md §3.6.
 
@@ -409,7 +412,7 @@ Unit tests:
 
 Verification: `cargo check --workspace` compiles; unit tests pass.
 
-### [ ] Step 14: Add local browser tool (Playwright MCP) registry entry and URL filter
+### [x] Step 14: Add local browser tool (Playwright MCP) registry entry and URL filter
 
 Add the local browser tool registry entry and the MCP request interceptor as described in spec.md §3.4.1.
 

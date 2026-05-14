@@ -552,7 +552,7 @@ def _skill_token_cost(skill, activation):
     estimate instead. This prevents a skill from declaring
     `max_context_tokens: 1` to bypass the budget.
     """
-    declared = max(activation.get("max_context_tokens", 2000), 1)
+    declared = max(activation.get("max_context_tokens", 0), 1)
     content = skill.get("content", "")
     approx = int(len(content) * 0.25) if content else 0
     if approx > declared * 2:
@@ -560,7 +560,7 @@ def _skill_token_cost(skill, activation):
     return declared
 
 
-def select_skills(skills, goal, max_candidates=3, max_tokens=6000):
+def select_skills(skills, goal, max_candidates=3, max_tokens=2048):
     """Select relevant skills using deterministic scoring.
 
     Mirrors the v1 Rust `ironclaw_skills::selector::prefilter_skills`:
@@ -584,6 +584,13 @@ def select_skills(skills, goal, max_candidates=3, max_tokens=6000):
     and max_candidates caps as scored skills.
     """
     if not skills or not goal:
+        return []
+
+    skills = [
+        sk for sk in skills
+        if sk.get("metadata", {}).get("activation", {}).get("max_context_tokens", 0) != 0
+    ]
+    if not skills:
         return []
 
     # Fold typographic quotes/dashes before extraction and scoring so autocorrected
@@ -719,8 +726,271 @@ def format_skills(skills):
     return "\n".join(parts)
 
 
+def is_trivial(goal, config):
+    """Heuristic: return True when the goal is simple enough to skip planning."""
+    threshold = config.get("trivial_word_threshold", 8)
+    words = goal.strip().split()
+    if len(words) <= threshold:
+        if "?" in goal and " and " not in goal.lower() and " then " not in goal.lower():
+            return True
+    lower = goal.lower().strip()
+    single_step_patterns = [
+        r"^what is\b", r"^who is\b", r"^when is\b", r"^where is\b",
+        r"^how much\b", r"^how many\b", r"^tell me about\b",
+        r"^define\b", r"^explain\b", r"^describe\b",
+    ]
+    for pattern in single_step_patterns:
+        if re.match(pattern, lower):
+            return True
+    return False
+
+
+def find_plan_template(docs, goal):
+    """Find a plan template in retrieved docs matching the goal. Templates are authoritative."""
+    for doc in docs:
+        if doc.get("type", "").lower() == "plan":
+            meta = doc.get("metadata", {})
+            if isinstance(meta, dict) and meta.get("is_template"):
+                steps = meta.get("steps")
+                if steps and isinstance(steps, list):
+                    return {
+                        "steps": steps,
+                        "confidence": meta.get("confidence", 0.8),
+                        "doc_id": doc.get("doc_id", ""),
+                    }
+    return None
+
+
+def find_cached_plan(docs, goal):
+    """Find the highest-confidence non-template plan in retrieved docs."""
+    best = None
+    best_confidence = -1.0
+    for doc in docs:
+        if doc.get("type", "").lower() == "plan":
+            meta = doc.get("metadata", {})
+            if isinstance(meta, dict) and not meta.get("is_template", False):
+                confidence = meta.get("confidence", 0.0)
+                if confidence > best_confidence:
+                    best_confidence = confidence
+                    steps = meta.get("steps", [])
+                    best = {
+                        "steps": steps,
+                        "confidence": confidence,
+                        "doc_id": doc.get("doc_id", ""),
+                        "is_decomposition": meta.get("is_decomposition", False),
+                    }
+    return best
+
+
+def run_minimal_planning_call(goal, actions):
+    """Isolated LLM call to generate a numbered plan. Returns list of steps or None."""
+    if _token_count(goal) > 200:
+        return None
+    planning_messages = [
+        {
+            "role": "system",
+            "content": "Break the following goal into numbered steps (1-5 maximum). Reply with only the numbered list.",
+        },
+        {"role": "user", "content": goal},
+    ]
+    cfg = {"force_text": True, "is_planning_call": True, "max_tokens": 200}
+    response = __llm_complete__(planning_messages, [], cfg)
+    text = response.get("content", "")
+    if not text:
+        return None
+    steps = []
+    for line in text.strip().split("\n"):
+        line = line.strip()
+        if line and re.match(r"^\d+[\.\)]\s+", line):
+            step_text = re.sub(r"^\d+[\.\)]\s+", "", line).strip()
+            if step_text:
+                steps.append(step_text)
+    if not steps:
+        return None
+    return steps
+
+
+def run_miniplan_call(goal):
+    """Decomposition LLM call: ask for 2-4 subtasks. Returns subtask list or None."""
+    planning_messages = [
+        {
+            "role": "system",
+            "content": "Break the following task into 2-4 independent subtasks. Reply with only a numbered list.",
+        },
+        {"role": "user", "content": goal},
+    ]
+    cfg = {"force_text": True, "is_planning_call": True, "max_tokens": 200}
+    response = __llm_complete__(planning_messages, [], cfg)
+    text = response.get("content", "")
+    if not text:
+        return None
+    subtasks = []
+    for line in text.strip().split("\n"):
+        line = line.strip()
+        if line and re.match(r"^\d+[\.\)]\s+", line):
+            task_text = re.sub(r"^\d+[\.\)]\s+", "", line).strip()
+            if task_text:
+                subtasks.append(task_text)
+    if not subtasks:
+        return None
+    return subtasks
+
+
+def should_invalidate_plan(user_message, current_plan, goal):
+    """Return True when a user message signals intent to abandon the current plan."""
+    if not current_plan:
+        return False
+    lower = user_message.lower().strip()
+    prefixes = [
+        "instead ", "forget ", "stop ", "cancel ", "actually ",
+        "new task", "switch to",
+    ]
+    phrases = ["do this instead", "change of plan", "never mind", "start over"]
+    for p in prefixes:
+        if lower.startswith(p):
+            return True
+    for phrase in phrases:
+        if phrase in lower:
+            return True
+    return False
+
+
+def run_decomposition_loop(subtasks, original_goal, actions, config, state):
+    """Execute a decomposed plan by running each subtask in sequence.
+
+    Each subtask runs a full run_loop which calls __transition_to__ internally.
+    After the first subtask completes, the thread state machine is in Completed
+    and does not allow Completed→Completed or Completed→Failed transitions.
+    The run_loop call for each subtask is wrapped in try/except because
+    __transition_to__ inside run_loop (for the 2nd+ subtask) raises RuntimeError
+    which propagates as a Python exception up through run_loop — if uncaught it
+    would reach Rust and crash the orchestrator. All __transition_to__ calls
+    within this function itself are also wrapped in try/except. Subtask outcomes
+    are tracked via complete_result regardless of whether transitions succeed.
+    """
+    subtask_config = dict(config)
+    subtask_config["decomposition_depth"] = config.get("decomposition_depth", 0) + 1
+
+    decomp_plan_doc_id = __save_plan_doc__(original_goal, subtasks, True)
+    if decomp_plan_doc_id:
+        state["active_plan_doc_id"] = decomp_plan_doc_id
+
+    for subtask in subtasks:
+        subtask_state = {}
+        last_resp = state.get("_last_response", "")
+        if last_resp:
+            max_bytes = 200 * 4
+            encoded = last_resp.encode("utf-8")
+            if len(encoded) > max_bytes:
+                last_resp = encoded[:max_bytes].decode("utf-8", errors="ignore")
+            subtask_state["_context_from_parent"] = last_resp
+
+        try:
+            subtask_result = run_loop([], subtask, actions, subtask_state, subtask_config)
+        except Exception as exc:
+            try:
+                __transition_to__("failed", "subtask exception: " + str(exc))
+            except Exception:
+                pass
+            return complete_result(state, "failed", error="Subtask raised: " + str(exc))
+
+        if subtask_result.get("outcome") not in ("completed",):
+            try:
+                __transition_to__("failed", "subtask failed: " + subtask)
+            except Exception:
+                pass
+            return complete_result(state, "failed", error="Subtask failed: " + subtask)
+
+        if subtask_result.get("response"):
+            state["_last_response"] = str(subtask_result["response"])[:800]
+
+    try:
+        __transition_to__("completed", "all subtasks completed")
+    except Exception:
+        pass
+    return complete_result(
+        state, "completed", state.get("_last_response", "All subtasks completed.")
+    )
+
+
+def run_planning_phase(goal, actions, config, state):
+    """Orchestrate the plan-selection logic. Returns (steps, source, docs).
+
+    source ∈ {"trivial", "cached", "template", "llm", "decompose", "failed"}.
+    docs is the list returned by __retrieve_docs__ for this goal, or None when
+    retrieval was skipped (trivial path). Callers reuse docs to avoid a second
+    store round-trip for knowledge injection at step 0.
+    Templates are checked before cached plans (authoritative per spec §3.5.2).
+    """
+    if is_trivial(goal, config):
+        return (["Complete the task: " + goal], "trivial", None)
+
+    docs = __retrieve_docs__(goal, 5)
+
+    template = find_plan_template(docs, goal)
+    if template:
+        plan_doc_id = __save_plan_doc__(goal, template["steps"], False)
+        if plan_doc_id:
+            state["active_plan_doc_id"] = plan_doc_id
+        return (template["steps"], "template", docs)
+
+    threshold = config.get("plan_confidence_threshold", 0.6)
+    cached = find_cached_plan(docs, goal)
+    if cached and cached.get("confidence", 0.0) >= threshold:
+        plan_doc_id = __save_plan_doc__(goal, cached["steps"], False)
+        if plan_doc_id:
+            state["active_plan_doc_id"] = plan_doc_id
+        if cached.get("is_decomposition"):
+            return (cached["steps"], "decompose", docs)
+        return (cached["steps"], "cached", docs)
+
+    steps = run_minimal_planning_call(goal, actions)
+    if steps is not None:
+        plan_doc_id = __save_plan_doc__(goal, steps, False)
+        if plan_doc_id:
+            state["active_plan_doc_id"] = plan_doc_id
+        return (steps, "llm", docs)
+
+    if config.get("decomposition_depth", 0) >= 1:
+        return (["Complete: " + goal], "llm", docs)
+
+    subtasks = run_miniplan_call(goal)
+    if subtasks is None:
+        return ([], "failed", docs)
+
+    return (subtasks, "decompose", docs)
+
+
+def _write_last_response(state, working_messages):
+    """Store the last non-empty assistant text in state["_last_response"].
+
+    Truncated to ≤ 200 tokens (~800 UTF-8 bytes) to limit checkpoint bloat.
+    The state dict is serialized to DB on every __save_checkpoint__ call, so
+    storing unbounded assistant responses would inflate every write.
+    """
+    _MAX_BYTES = 200 * 4
+    for msg in reversed(working_messages):
+        if msg.get("role", "").lower() == "assistant":
+            content = msg.get("content", "")
+            if content and content.strip():
+                trimmed = content.strip()
+                encoded = trimmed.encode("utf-8")
+                if len(encoded) > _MAX_BYTES:
+                    trimmed = encoded[:_MAX_BYTES].decode("utf-8", errors="ignore")
+                state["_last_response"] = trimmed
+                return
+    state.pop("_last_response", None)
+
+
 def complete_result(state, outcome, response=None, error=None, extra=None):
     """Return a standard orchestrator result with persisted state."""
+    plan_doc_id = state.pop("active_plan_doc_id", None)
+    if plan_doc_id:
+        try:
+            __record_skill_usage__(plan_doc_id, outcome == "completed")
+        except Exception:
+            pass
+
     result = {"outcome": outcome, "state": state}
     if response is not None:
         result["response"] = response
@@ -776,14 +1046,42 @@ def run_loop(context, goal, actions, state, config):
                 break
     working_messages = ensure_working_messages(state, context)
 
+    plan_steps, plan_source, plan_docs = run_planning_phase(goal, actions, config, state)
+    if plan_source == "failed":
+        __transition_to__("failed", "planning failed")
+        _write_last_response(state, working_messages)
+        return complete_result(state, "failed", error="Could not generate a plan for the given goal.")
+    if plan_source == "decompose":
+        _write_last_response(state, working_messages)
+        return run_decomposition_loop(plan_steps, goal, actions, config, state)
+    state["plan_steps"] = plan_steps
+    state.setdefault("plan_current_step", 0)
+
     for step in range(step_count, max_iterations):
         # 1. Check signals
         signal = __check_signals__()
         if signal == "stop":
             __transition_to__("completed", "stopped by signal")
+            _write_last_response(state, working_messages)
             return complete_result(state, "stopped")
         if signal and isinstance(signal, dict) and "inject" in signal:
             injected_text = signal["inject"]
+            current_plan = state.get("plan_steps", [])
+            if should_invalidate_plan(injected_text, current_plan, goal):
+                state.pop("plan_steps", None)
+                state.pop("plan_current_step", None)
+                state.pop("active_plan_doc_id", None)
+                new_steps, new_source, _ = run_planning_phase(injected_text, actions, config, state)
+                if new_source == "failed":
+                    _write_last_response(state, working_messages)
+                    __transition_to__("failed", "re-planning failed after goal change")
+                    return complete_result(state, "failed", error="Could not re-plan for the updated goal.")
+                elif new_source == "decompose":
+                    _write_last_response(state, working_messages)
+                    return run_decomposition_loop(new_steps, injected_text, actions, config, state)
+                else:
+                    state["plan_steps"] = new_steps
+                    state["plan_current_step"] = 0
             append_message(working_messages, "User", injected_text)
             # Enable obligation if follow-up message signals execution intent.
             # This covers the inject-into-running-thread path where the thread
@@ -797,29 +1095,83 @@ def run_loop(context, goal, actions, state, config):
         budget = __check_budget__()
         if budget.get("tokens_remaining", 1) <= 0:
             __transition_to__("completed", "token budget exhausted")
+            _write_last_response(state, working_messages)
             return complete_result(state, "completed", "Token budget exhausted.")
         if budget.get("time_remaining_ms", 1) <= 0:
             __transition_to__("completed", "time budget exhausted")
+            _write_last_response(state, working_messages)
             return complete_result(state, "completed", "Time budget exhausted.")
         if budget.get("usd_remaining") is not None and budget["usd_remaining"] <= 0:
             __transition_to__("completed", "cost budget exhausted")
+            _write_last_response(state, working_messages)
             return complete_result(state, "completed", "Cost budget exhausted.")
 
         # 3. Inject prior knowledge and activate skills on first step
         if step == 0:
-            docs = __retrieve_docs__(goal, 5)
-            if docs:
-                knowledge = format_docs(docs)
-                append_system_append(working_messages, knowledge)
+            docs = plan_docs if plan_docs is not None else __retrieve_docs__(goal, 5)
 
-            # Select and inject skills based on goal keywords
             all_skills = __list_skills__()
             explicit_skills, _rewritten_goal, missing_explicit_skills = extract_explicit_skills(all_skills, goal)
-            active_skills = select_skills(all_skills, goal, max_candidates=3, max_tokens=6000)
+            active_skills = select_skills(all_skills, goal, max_candidates=3, max_tokens=config.get("skill_token_budget", 2048))
             explicit_names = set(
                 str(s.get("metadata", {}).get("name", ""))
                 for s in explicit_skills
             )
+
+            system_content = next(
+                (m.get("content", "") for m in working_messages if m.get("role") in ("System", "system")),
+                "",
+            )
+            plan_anchor_text = state.get("plan_anchor_text", "")
+            guard_skills_input = [
+                {
+                    "name": s.get("metadata", {}).get("name", ""),
+                    "content": s.get("content", ""),
+                    "score": score_skill(s, goal.lower(), goal),
+                    "type": "Skill",
+                }
+                for s in active_skills
+            ]
+            guard_docs_input = [
+                {
+                    "name": doc.get("doc_id", doc.get("title", "")),
+                    "content": doc.get("content", ""),
+                    "score": 0.5,
+                    "type": doc.get("type", ""),
+                }
+                for doc in docs
+            ]
+            guard_result = __apply_token_guard__({
+                "budget": config.get("max_prompt_tokens", 8192),
+                "system_prompt": system_content,
+                "plan_anchor": plan_anchor_text,
+                "skills": guard_skills_input,
+                "memory_docs": guard_docs_input,
+                "tool_schemas": [],
+                "conversation_history": [],
+            })
+            if not guard_result.get("fits", True):
+                depth = config.get("decomposition_depth", 0)
+                if depth < 1:
+                    state.pop("active_plan_doc_id", None)
+                    decomp_subtasks = run_miniplan_call(goal)
+                    if decomp_subtasks:
+                        _write_last_response(state, working_messages)
+                        return run_decomposition_loop(decomp_subtasks, goal, actions, config, state)
+                    else:
+                        __emit_event__("token_budget_warning", reason="prompt exceeds budget and decomposition failed, continuing with degraded prompt")
+                else:
+                    __emit_event__("token_budget_warning", reason="prompt exceeds budget at max decomposition depth, continuing with degraded prompt")
+            survivors = guard_result.get("survivors", {})
+            survivor_skill_names = set(survivors.get("skills", []))
+            survivor_doc_names = set(survivors.get("memory_docs", []))
+            active_skills = [s for s in active_skills if s.get("metadata", {}).get("name", "") in survivor_skill_names]
+            docs = [d for d in docs if d.get("doc_id", d.get("title", "")) in survivor_doc_names]
+
+            if docs:
+                knowledge = format_docs(docs)
+                append_system_append(working_messages, knowledge)
+
             if active_skills:
                 __set_active_skills__([
                     {
@@ -862,6 +1214,41 @@ def run_loop(context, goal, actions, state, config):
         compact_if_needed(state, config)
         working_messages = ensure_working_messages(state, context)
 
+        # Apply token guard for steps > 0: trim history if needed.
+        if step > 0:
+            sys_content_gt0 = next(
+                (m.get("content", "") for m in working_messages if m.get("role") in ("System", "system")),
+                "",
+            )
+            non_sys_msgs = [
+                m for m in working_messages
+                if m.get("role") not in ("System", "system")
+            ]
+            conv_hist_gt0 = [
+                {"role": m.get("role", ""), "content": m.get("content", "")}
+                for m in non_sys_msgs
+            ]
+            guard_result_gt0 = __apply_token_guard__({
+                "budget": config.get("max_prompt_tokens", 8192),
+                "system_prompt": sys_content_gt0,
+                "plan_anchor": state.get("plan_anchor_text", ""),
+                "skills": [],
+                "memory_docs": [],
+                "tool_schemas": [],
+                "conversation_history": conv_hist_gt0,
+            })
+            if not guard_result_gt0.get("fits", True):
+                __emit_event__("token_budget_warning", step=step)
+                surviving_hist = guard_result_gt0.get("conversation_history", conv_hist_gt0)
+                n_dropped = len(conv_hist_gt0) - len(surviving_hist)
+                if n_dropped > 0:
+                    sys_msgs = [m for m in working_messages if m.get("role") in ("System", "system")]
+                    surviving = non_sys_msgs[n_dropped:]
+                    while surviving and surviving[0].get("role") == "ActionResult":
+                        surviving = surviving[1:]
+                    working_messages[:] = sys_msgs + surviving
+                    state["working_messages"] = working_messages
+
         # 4. Call LLM
         __emit_event__("step_started", step=step)
         response = __llm_complete__(working_messages, actions, None)
@@ -880,6 +1267,7 @@ def run_loop(context, goal, actions, state, config):
             final_answer = extract_final(text)
             if final_answer is not None:
                 __transition_to__("completed", "FINAL() in text")
+                _write_last_response(state, working_messages)
                 return complete_result(state, "completed", final_answer)
 
             # Check for tool intent nudge (V1 semantics: consecutive counter,
@@ -922,6 +1310,7 @@ def run_loop(context, goal, actions, state, config):
 
             # Plain text response - done
             __transition_to__("completed", "text response")
+            _write_last_response(state, working_messages)
             return complete_result(state, "completed", text)
 
         elif resp_type == "code":
@@ -946,6 +1335,7 @@ def run_loop(context, goal, actions, state, config):
             # Check for FINAL() in code output
             if result.get("final_answer") is not None:
                 __transition_to__("completed", "FINAL() in code")
+                _write_last_response(state, working_messages)
                 return complete_result(state, "completed", result["final_answer"])
 
             # Check for unified gate pause (new path)
@@ -1005,6 +1395,7 @@ def run_loop(context, goal, actions, state, config):
                 consecutive_errors += 1
                 if max_consecutive_errors is not None and consecutive_errors >= max_consecutive_errors:
                     __transition_to__("failed", "too many consecutive errors")
+                    _write_last_response(state, working_messages)
                     return complete_result(
                         state,
                         "failed",
@@ -1012,6 +1403,7 @@ def run_loop(context, goal, actions, state, config):
                     )
             else:
                 consecutive_errors = 0
+                state["plan_current_step"] = state.get("plan_current_step", 0) + 1
 
             __save_checkpoint__(state, {
                 "nudge_count": consecutive_nudges,
@@ -1211,6 +1603,7 @@ def run_loop(context, goal, actions, state, config):
                             original_length=len(response.get("content", "") or ""),
                         )
                 __transition_to__("completed", "FINAL via tool_calls")
+                _write_last_response(state, working_messages)
                 return complete_result(state, "completed", str(answer))
 
             # Track consecutive action errors (separate from code errors).
@@ -1218,11 +1611,13 @@ def run_loop(context, goal, actions, state, config):
             # reset if ANY succeeded.
             if batch_success_count > 0:
                 consecutive_action_errors = 0
+                state["plan_current_step"] = state.get("plan_current_step", 0) + 1
             elif batch_error_count > 0:
                 consecutive_action_errors += 1
 
             if max_consecutive_errors is not None and consecutive_action_errors > 0 and consecutive_action_errors >= max_consecutive_errors + 2:
                 __transition_to__("failed", "too many consecutive action errors")
+                _write_last_response(state, working_messages)
                 return complete_result(
                     state,
                     "failed",
@@ -1249,6 +1644,7 @@ def run_loop(context, goal, actions, state, config):
 
     # Max iterations reached
     __transition_to__("completed", "max iterations reached")
+    _write_last_response(state, working_messages)
     return complete_result(state, "max_iterations")
 
 

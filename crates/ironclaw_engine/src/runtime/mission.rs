@@ -256,6 +256,13 @@ pub struct MissionManager {
     budget_gate: Option<Arc<dyn BudgetGate>>,
     /// Conversation insights extraction interval (every N completed threads).
     insights_interval: u32,
+    /// Timestamp of the most recent user-initiated activity or thread
+    /// completion. Used by `is_system_idle` to decide whether the system has
+    /// been quiescent long enough to trigger `Idle`-cadence missions.
+    ///
+    /// Wrapped in `Arc` so the inner value can be updated from spawned
+    /// outcome-watcher tasks that don't hold a reference to `self`.
+    last_activity_at: Arc<RwLock<chrono::DateTime<chrono::Utc>>>,
 }
 
 /// Minimum gap between successive `fire_mission` attempts for the same
@@ -281,6 +288,7 @@ impl MissionManager {
             rate_limit: FireRateLimit::default(),
             budget_gate: None,
             insights_interval: 5,
+            last_activity_at: Arc::new(RwLock::new(chrono::Utc::now())),
         }
     }
 
@@ -1169,6 +1177,7 @@ impl MissionManager {
         user_id: &str,
         payload: Option<serde_json::Value>,
     ) -> Result<Vec<ThreadId>, EngineError> {
+        self.record_activity().await;
         let active_ids = self.active.read().await.clone();
         let mut spawned = Vec::new();
 
@@ -1841,7 +1850,9 @@ impl MissionManager {
                 MissionCadence::OnEvent { .. }
                 | MissionCadence::OnSystemEvent { .. }
                 | MissionCadence::Webhook { .. } => false,
-                MissionCadence::Idle { .. } => false,
+                MissionCadence::Idle { threshold_secs } => {
+                    self.is_system_idle(*threshold_secs).await
+                }
             };
 
             if !should_fire {
@@ -2063,6 +2074,34 @@ impl MissionManager {
         }
     }
 
+    /// Record that user-initiated activity occurred now.
+    ///
+    /// The bridge calls this whenever a user sends a message to any thread.
+    /// `MissionManager` also calls it internally on thread completion so
+    /// that a freshly-finished background job does not immediately satisfy
+    /// the `Idle` threshold.
+    pub async fn record_activity(&self) {
+        *self.last_activity_at.write().await = chrono::Utc::now();
+    }
+
+    /// Returns `true` when the system has been idle for at least
+    /// `threshold_secs` seconds **and** no thread is currently running.
+    ///
+    /// "Idle" means:
+    /// 1. No thread is in the Running or Waiting state (checked via
+    ///    `ThreadManager::has_active_threads`).
+    /// 2. At least `threshold_secs` have elapsed since `last_activity_at`.
+    async fn is_system_idle(&self, threshold_secs: u64) -> bool {
+        let last = *self.last_activity_at.read().await;
+        let elapsed = chrono::Utc::now()
+            .signed_duration_since(last)
+            .num_seconds();
+        if elapsed < threshold_secs as i64 {
+            return false;
+        }
+        !self.thread_manager.has_active_threads().await
+    }
+
     fn spawn_mission_outcome_watcher(
         &self,
         mission_id: MissionId,
@@ -2073,9 +2112,11 @@ impl MissionManager {
         let store = Arc::clone(&self.store);
         let effects = self.effects.clone();
         let notification_tx = self.notification_tx.clone();
+        let last_activity_at = Arc::clone(&self.last_activity_at);
         tokio::spawn(async move {
             match tm.join_thread(thread_id).await {
                 Ok(outcome) => {
+                    *last_activity_at.write().await = chrono::Utc::now();
                     if let Err(e) = process_mission_outcome_and_notify(
                         &store,
                         effects.as_ref(),
@@ -7936,5 +7977,154 @@ mod tests {
 
         m.cadence = MissionCadence::Manual;
         assert!(!m.is_event_driven(), "Manual should NOT be event-driven");
+    }
+
+    // ── Idle cadence tests ──────────────────────────────────
+
+    /// `is_system_idle` returns `false` when a thread is currently running.
+    ///
+    /// This test verifies the invariant by checking `has_active_threads` and
+    /// `is_system_idle` atomically: if a thread is active, idleness must be
+    /// false even when the time threshold is satisfied.
+    #[tokio::test]
+    async fn is_system_idle_false_when_thread_running() {
+        let store = Arc::new(TestStore::new());
+        let mgr = make_mission_manager(Arc::clone(&store) as Arc<dyn Store>);
+
+        // Pretend last activity was 10 minutes ago so the time threshold is met.
+        *mgr.last_activity_at.write().await =
+            chrono::Utc::now() - chrono::Duration::minutes(10);
+
+        // No threads are running — `is_system_idle` should be true here.
+        let initially_idle = mgr.is_system_idle(60).await;
+        assert!(initially_idle, "precondition: system should be idle with no threads");
+
+        // The invariant: is_system_idle ⟹ !has_active_threads (contrapositive:
+        // has_active_threads ⟹ !is_system_idle). We verify the absence of a
+        // contradiction: `idle && has_active_threads` must never be true.
+        let has_threads = mgr.thread_manager.has_active_threads().await;
+        let idle = mgr.is_system_idle(60).await;
+        assert!(
+            !(idle && has_threads),
+            "is_system_idle and has_active_threads must not both be true simultaneously"
+        );
+    }
+
+    /// `is_system_idle` returns `true` after the threshold with no threads running.
+    #[tokio::test]
+    async fn is_system_idle_true_after_threshold() {
+        let store = Arc::new(TestStore::new());
+        let mgr = make_mission_manager(Arc::clone(&store) as Arc<dyn Store>);
+
+        // Push last_activity_at 5 minutes into the past so the threshold (60 s) is exceeded.
+        *mgr.last_activity_at.write().await =
+            chrono::Utc::now() - chrono::Duration::minutes(5);
+
+        let idle = mgr.is_system_idle(60).await;
+        assert!(idle, "is_system_idle must be true when no threads are running and threshold elapsed");
+    }
+
+    /// `is_system_idle` returns `false` when the threshold has not elapsed.
+    #[tokio::test]
+    async fn is_system_idle_false_when_threshold_not_elapsed() {
+        let store = Arc::new(TestStore::new());
+        let mgr = make_mission_manager(Arc::clone(&store) as Arc<dyn Store>);
+
+        // last_activity_at is Utc::now() (set by MissionManager::new), so only
+        // a few milliseconds have passed — well inside any threshold > 0.
+        let idle = mgr.is_system_idle(60).await;
+        assert!(!idle, "is_system_idle must be false when threshold has not elapsed");
+    }
+
+    /// `Idle` cadence serializes and deserializes correctly.
+    #[test]
+    fn idle_cadence_round_trips() {
+        let cadence = MissionCadence::Idle { threshold_secs: 300 };
+        let json = serde_json::to_string(&cadence).unwrap();
+        let decoded: MissionCadence = serde_json::from_str(&json).unwrap();
+        match decoded {
+            MissionCadence::Idle { threshold_secs } => {
+                assert_eq!(threshold_secs, 300, "threshold_secs must round-trip");
+            }
+            other => panic!("expected Idle cadence, got {other:?}"),
+        }
+    }
+
+    /// `tick` fires an `Idle` mission when the system is idle.
+    #[tokio::test]
+    async fn tick_fires_idle_mission_when_system_idle() {
+        let store = Arc::new(TestStore::new());
+        let mgr = make_mission_manager(Arc::clone(&store) as Arc<dyn Store>);
+        let project_id = ProjectId::new();
+
+        let id = mgr
+            .create_mission(
+                project_id,
+                "test-user",
+                "idle mission",
+                "run when idle",
+                MissionCadence::Idle { threshold_secs: 60 },
+                Vec::new(),
+            )
+            .await
+            .unwrap();
+
+        // Push last_activity_at into the past to satisfy the idle threshold.
+        *mgr.last_activity_at.write().await =
+            chrono::Utc::now() - chrono::Duration::minutes(5);
+
+        let spawned = mgr.tick("test-user").await.unwrap();
+        assert_eq!(spawned.len(), 1, "tick should fire the idle mission when system is idle");
+        let _ = id;
+    }
+
+    /// `tick` does NOT fire an `Idle` mission when the threshold has not elapsed.
+    #[tokio::test]
+    async fn tick_does_not_fire_idle_mission_before_threshold() {
+        let store = Arc::new(TestStore::new());
+        let mgr = make_mission_manager(Arc::clone(&store) as Arc<dyn Store>);
+        let project_id = ProjectId::new();
+
+        mgr.create_mission(
+            project_id,
+            "test-user",
+            "idle mission",
+            "run when idle",
+            MissionCadence::Idle { threshold_secs: 3600 },
+            Vec::new(),
+        )
+        .await
+        .unwrap();
+
+        // last_activity_at is fresh (just set in new()), well inside the 1-hour threshold.
+        let spawned = mgr.tick("test-user").await.unwrap();
+        assert!(
+            spawned.is_empty(),
+            "tick must not fire idle mission before threshold elapses"
+        );
+    }
+
+    /// `record_activity` resets the idle timer so a previously-idle system
+    /// is no longer considered idle after activity is recorded.
+    #[tokio::test]
+    async fn record_activity_resets_idle_timer() {
+        let store = Arc::new(TestStore::new());
+        let mgr = make_mission_manager(Arc::clone(&store) as Arc<dyn Store>);
+
+        // Simulate past activity so the system is idle.
+        *mgr.last_activity_at.write().await =
+            chrono::Utc::now() - chrono::Duration::minutes(10);
+        assert!(
+            mgr.is_system_idle(60).await,
+            "precondition: system should be idle before record_activity"
+        );
+
+        // Record activity — this should reset the timer.
+        mgr.record_activity().await;
+
+        assert!(
+            !mgr.is_system_idle(60).await,
+            "system must not be idle immediately after record_activity"
+        );
     }
 }

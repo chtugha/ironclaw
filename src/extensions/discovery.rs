@@ -247,6 +247,7 @@ async fn with_timeout<T>(
 fn extract_source(source: &ExtensionSource) -> String {
     match source {
         ExtensionSource::McpUrl { url } => url.clone(),
+        ExtensionSource::McpStdio { command, .. } => command.clone(),
         ExtensionSource::Discovered { url } => url.clone(),
         ExtensionSource::WasmDownload { wasm_url, .. } => wasm_url.clone(),
         ExtensionSource::WasmBuildable { source_dir, .. } => source_dir.clone(),

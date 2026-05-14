@@ -557,6 +557,15 @@ impl ThreadManager {
             .is_some_and(|rt| !rt.handle.is_finished())
     }
 
+    /// Returns `true` if any thread is currently running (not yet finished).
+    ///
+    /// Used by `MissionManager::is_system_idle` to determine whether the
+    /// engine is busy before triggering `Idle`-cadence missions.
+    pub async fn has_active_threads(&self) -> bool {
+        let running = self.running.read().await;
+        running.values().any(|rt| !rt.handle.is_finished())
+    }
+
     /// Wait for a thread to finish and return its outcome.
     /// Removes the thread from the running set.
     pub async fn join_thread(&self, thread_id: ThreadId) -> Result<ThreadOutcome, EngineError> {

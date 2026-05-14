@@ -1,4 +1,4 @@
-/// A structured plan with ordered steps and a current step pointer.
+#[derive(Debug, Clone, PartialEq)]
 pub struct PlanAnchor {
     pub steps: Vec<String>,
     pub current_step: usize,
@@ -44,10 +44,17 @@ impl PlanAnchor {
         }
 
         let ellipsis = "…";
+        let ellipsis_line_cost = 1 + ellipsis.len();
         let current_idx = current_step;
         let current_line = &step_lines[current_idx];
 
-        let mut budget = header.len() + 1 + current_line.len() + 1;
+        let mut budget = header.len() + 1 + current_line.len();
+        if current_idx > 0 {
+            budget += ellipsis_line_cost;
+        }
+        if current_idx + 1 < step_lines.len() {
+            budget += ellipsis_line_cost;
+        }
 
         let mut before: Vec<usize> = Vec::new();
         let mut after: Vec<usize> = Vec::new();
@@ -61,28 +68,38 @@ impl PlanAnchor {
                 break;
             }
 
+            let mut made_progress = false;
+
             if can_go_before {
                 let candidate = &step_lines[lo - 1];
-                let needed = candidate.len() + 1 + ellipsis.len();
+                let needed = candidate.len() + 1;
                 if budget + needed <= max_bytes {
-                    budget += candidate.len() + 1;
+                    budget += needed;
                     lo -= 1;
                     before.push(lo);
-                } else {
-                    break;
+                    if lo == 0 {
+                        budget -= ellipsis_line_cost;
+                    }
+                    made_progress = true;
                 }
             }
 
             if can_go_after {
                 let candidate = &step_lines[hi + 1];
-                let needed = candidate.len() + 1 + ellipsis.len();
+                let needed = candidate.len() + 1;
                 if budget + needed <= max_bytes {
-                    budget += candidate.len() + 1;
+                    budget += needed;
                     hi += 1;
                     after.push(hi);
-                } else {
-                    break;
+                    if hi + 1 == step_lines.len() {
+                        budget -= ellipsis_line_cost;
+                    }
+                    made_progress = true;
                 }
+            }
+
+            if !made_progress {
+                break;
             }
         }
 
@@ -205,5 +222,25 @@ mod tests {
         };
         let output = anchor.to_prompt_section();
         assert!(output.contains("(current)"));
+    }
+
+    #[test]
+    fn to_prompt_section_both_ellipses_stay_within_budget() {
+        let steps: Vec<String> = (1..=30)
+            .map(|i| format!("Step {i}: perform a moderately detailed task"))
+            .collect();
+        let anchor = PlanAnchor {
+            steps,
+            current_step: 15,
+        };
+        let output = anchor.to_prompt_section();
+        assert!(output.contains("(current)"));
+        assert!(output.contains("…"));
+        let token_estimate = (output.len() as f64 * 0.25) as usize;
+        assert!(
+            token_estimate <= 200,
+            "output with both ellipses estimated at {token_estimate} tokens, exceeds 200 limit. Byte len: {}",
+            output.len()
+        );
     }
 }

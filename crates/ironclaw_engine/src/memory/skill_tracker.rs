@@ -36,12 +36,12 @@ impl SkillTracker {
         Self { store }
     }
 
-    /// Record that a skill was used in a completed thread.
+    /// Record that a skill or plan was used in a completed thread.
     ///
-    /// Loads the skill's MemoryDoc, updates metrics in the metadata JSON,
-    /// and saves it back. Returns `Err(EngineError::Skill)` if the doc is
-    /// missing, not a Skill, or has invalid metadata — callers decide whether
-    /// to propagate or log-and-swallow.
+    /// Loads the MemoryDoc, updates metrics in the metadata JSON, and saves it
+    /// back. Accepts `DocType::Skill` and `DocType::Plan`; returns
+    /// `Err(EngineError::Skill)` for any other doc type, a missing doc, or
+    /// invalid metadata — callers decide whether to propagate or log-and-swallow.
     pub async fn record_usage(&self, doc_id: DocId, success: bool) -> Result<(), EngineError> {
         let doc = self
             .store
@@ -51,29 +51,72 @@ impl SkillTracker {
                 reason: format!("skill doc not found: {}", doc_id.0),
             })?;
 
-        if doc.doc_type != DocType::Skill {
+        if !matches!(doc.doc_type, DocType::Skill | DocType::Plan) {
             return Err(EngineError::Skill {
-                reason: format!("doc {} is not a skill (type: {:?})", doc_id.0, doc.doc_type),
+                reason: format!(
+                    "doc {} has unsupported type for record_usage: {:?}",
+                    doc_id.0, doc.doc_type
+                ),
             });
         }
 
-        let mut meta: V2SkillMetadata =
-            serde_json::from_value(doc.metadata.clone()).map_err(|e| EngineError::Skill {
-                reason: format!("invalid skill metadata for {}: {e}", doc_id.0),
+        let updated_metadata = if doc.doc_type == DocType::Plan {
+            let mut meta = doc.metadata.clone();
+            let obj = meta.as_object_mut().ok_or_else(|| EngineError::Skill {
+                reason: format!(
+                    "plan doc {} has non-object metadata, cannot update metrics",
+                    doc_id.0
+                ),
             })?;
-
-        meta.metrics.usage_count += 1;
-        if success {
-            meta.metrics.success_count += 1;
+            let execution_count = obj
+                .get("execution_count")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0)
+                + 1;
+            let failure_count = obj
+                .get("failure_count")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0)
+                + if success { 0 } else { 1 };
+            let confidence =
+                (1.0 - (failure_count as f64 / (execution_count as f64 + 1.0))).clamp(0.0, 1.0);
+            obj.insert(
+                "execution_count".to_string(),
+                serde_json::Value::Number(execution_count.into()),
+            );
+            obj.insert(
+                "failure_count".to_string(),
+                serde_json::Value::Number(failure_count.into()),
+            );
+            obj.insert(
+                "confidence".to_string(),
+                serde_json::Value::Number(
+                    serde_json::Number::from_f64(confidence)
+                        .unwrap_or(serde_json::Number::from(0u64)),
+                ),
+            );
+            meta
         } else {
-            meta.metrics.failure_count += 1;
-        }
-        meta.metrics.last_used = Some(chrono::Utc::now());
+            let mut meta: V2SkillMetadata =
+                serde_json::from_value(doc.metadata.clone()).map_err(|e| EngineError::Skill {
+                    reason: format!("invalid skill metadata for {}: {e}", doc_id.0),
+                })?;
+
+            meta.metrics.usage_count += 1;
+            if success {
+                meta.metrics.success_count += 1;
+            } else {
+                meta.metrics.failure_count += 1;
+            }
+            meta.metrics.last_used = Some(chrono::Utc::now());
+
+            serde_json::to_value(&meta).map_err(|e| EngineError::Skill {
+                reason: format!("failed to serialize skill metadata: {e}"),
+            })?
+        };
 
         let updated_doc = MemoryDoc {
-            metadata: serde_json::to_value(&meta).map_err(|e| EngineError::Skill {
-                reason: format!("failed to serialize skill metadata: {e}"),
-            })?,
+            metadata: updated_metadata,
             updated_at: chrono::Utc::now(),
             ..doc
         };
@@ -367,6 +410,91 @@ mod tests {
 
         let result = tracker.record_usage(DocId::new(), true).await;
         assert!(result.is_err());
+    }
+
+    fn make_plan_doc(project_id: ProjectId) -> MemoryDoc {
+        let meta = serde_json::json!({
+            "is_template": false,
+            "is_decomposition": false,
+            "goal": "test goal",
+            "steps": ["step 1", "step 2"],
+            "execution_count": 2,
+            "failure_count": 1,
+            "confidence": 0.75,
+        });
+        let mut doc = MemoryDoc::new(
+            project_id,
+            "test-user",
+            DocType::Plan,
+            "plan:test goal",
+            "step 1\nstep 2",
+        );
+        doc.metadata = meta;
+        doc
+    }
+
+    #[tokio::test]
+    async fn test_record_usage_plan_success() {
+        let project_id = ProjectId::new();
+        let doc = make_plan_doc(project_id);
+        let doc_id = doc.id;
+
+        let store = Arc::new(crate::tests::InMemoryStore::with_docs(vec![doc]));
+        let tracker = SkillTracker::new(store.clone());
+
+        tracker.record_usage(doc_id, true).await.unwrap();
+
+        let updated = store.load_memory_doc(doc_id).await.unwrap().unwrap();
+        let execution_count = updated.metadata["execution_count"].as_u64().unwrap();
+        let failure_count = updated.metadata["failure_count"].as_u64().unwrap();
+        let confidence = updated.metadata["confidence"].as_f64().unwrap();
+
+        assert_eq!(execution_count, 3);
+        assert_eq!(failure_count, 1);
+        let expected = 1.0 - (1.0f64 / (3.0 + 1.0));
+        assert!((confidence - expected).abs() < 1e-6, "confidence={confidence} expected≈{expected}");
+    }
+
+    #[tokio::test]
+    async fn test_record_usage_plan_failure() {
+        let project_id = ProjectId::new();
+        let doc = make_plan_doc(project_id);
+        let doc_id = doc.id;
+
+        let store = Arc::new(crate::tests::InMemoryStore::with_docs(vec![doc]));
+        let tracker = SkillTracker::new(store.clone());
+
+        tracker.record_usage(doc_id, false).await.unwrap();
+
+        let updated = store.load_memory_doc(doc_id).await.unwrap().unwrap();
+        let execution_count = updated.metadata["execution_count"].as_u64().unwrap();
+        let failure_count = updated.metadata["failure_count"].as_u64().unwrap();
+        let confidence = updated.metadata["confidence"].as_f64().unwrap();
+
+        assert_eq!(execution_count, 3);
+        assert_eq!(failure_count, 2);
+        let expected = (1.0 - (2.0f64 / (3.0 + 1.0))).clamp(0.0, 1.0);
+        assert!((confidence - expected).abs() < 1e-6, "confidence={confidence} expected≈{expected}");
+    }
+
+    #[tokio::test]
+    async fn test_record_usage_note_doc_fails() {
+        let project_id = ProjectId::new();
+        let mut doc = MemoryDoc::new(
+            project_id,
+            "test-user",
+            DocType::Note,
+            "note:test",
+            "some note",
+        );
+        doc.metadata = serde_json::json!({});
+        let doc_id = doc.id;
+
+        let store = Arc::new(crate::tests::InMemoryStore::with_docs(vec![doc]));
+        let tracker = SkillTracker::new(store);
+
+        let result = tracker.record_usage(doc_id, true).await;
+        assert!(result.is_err(), "record_usage should fail for DocType::Note");
     }
 
     #[tokio::test]
