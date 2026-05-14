@@ -948,11 +948,11 @@ def run_planning_phase(goal, actions, config, state):
     threshold = config.get("plan_confidence_threshold", 0.6)
     cached = find_cached_plan(docs, goal)
     if cached and cached.get("confidence", 0.0) >= threshold:
+        if cached.get("is_decomposition"):
+            return (cached["steps"], "decompose", docs)
         plan_doc_id = __save_plan_doc__(goal, cached["steps"], False)
         if plan_doc_id:
             state["active_plan_doc_id"] = plan_doc_id
-        if cached.get("is_decomposition"):
-            return (cached["steps"], "decompose", docs)
         return (cached["steps"], "cached", docs)
 
     steps = run_minimal_planning_call(goal, actions)
@@ -1138,11 +1138,12 @@ def run_loop(context, goal, actions, state, config):
                 "",
             )
             plan_anchor_text = state.get("plan_anchor_text", "")
+            _normalized_goal = normalize_punctuation(goal)
             guard_skills_input = [
                 {
                     "name": s.get("metadata", {}).get("name", ""),
                     "content": s.get("content", ""),
-                    "score": score_skill(s, goal.lower(), goal),
+                    "score": score_skill(s, _normalized_goal.lower(), _normalized_goal),
                     "type": "Skill",
                 }
                 for s in active_skills
@@ -1169,6 +1170,8 @@ def run_loop(context, goal, actions, state, config):
                 depth = config.get("decomposition_depth", 0)
                 if depth < 1:
                     state.pop("active_plan_doc_id", None)
+                    state.pop("plan_steps", None)
+                    state.pop("plan_current_step", None)
                     decomp_subtasks = run_miniplan_call(goal)
                     if decomp_subtasks:
                         _write_last_response(state, working_messages)
