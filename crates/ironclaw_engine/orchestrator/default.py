@@ -1136,10 +1136,10 @@ def run_loop(context, goal, actions, state, config):
                 {
                     "name": doc.get("doc_id", doc.get("title", "")),
                     "content": doc.get("content", ""),
-                    "score": 0.5,
+                    "score": 1.0 / (i + 1),
                     "type": doc.get("type", ""),
                 }
-                for doc in docs
+                for i, doc in enumerate(docs)
             ]
             guard_result = __apply_token_guard__({
                 "budget": config.get("max_prompt_tokens", 8192),
