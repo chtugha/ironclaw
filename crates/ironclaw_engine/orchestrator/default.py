@@ -1169,11 +1169,11 @@ def run_loop(context, goal, actions, state, config):
             if not guard_result.get("fits", True):
                 depth = config.get("decomposition_depth", 0)
                 if depth < 1:
-                    state.pop("active_plan_doc_id", None)
-                    state.pop("plan_steps", None)
-                    state.pop("plan_current_step", None)
                     decomp_subtasks = run_miniplan_call(goal)
                     if decomp_subtasks:
+                        state.pop("active_plan_doc_id", None)
+                        state.pop("plan_steps", None)
+                        state.pop("plan_current_step", None)
                         _write_last_response(state, working_messages)
                         return run_decomposition_loop(decomp_subtasks, goal, actions, config, state)
                     else:
