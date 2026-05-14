@@ -1258,7 +1258,18 @@ def run_loop(context, goal, actions, state, config):
                 n_dropped = len(conv_hist_gt0) - len(surviving_hist)
                 if n_dropped > 0:
                     sys_msgs = [m for m in working_messages if m.get("role") in ("System", "system")]
-                    surviving = non_sys_msgs[n_dropped:]
+                    last_user_idx = None
+                    for ri in range(len(non_sys_msgs) - 1, -1, -1):
+                        if non_sys_msgs[ri].get("role", "").lower() == "user":
+                            last_user_idx = ri
+                            break
+                    surviving = []
+                    to_drop = n_dropped
+                    for mi, m in enumerate(non_sys_msgs):
+                        if to_drop > 0 and mi != last_user_idx:
+                            to_drop -= 1
+                        else:
+                            surviving.append(m)
                     while surviving and surviving[0].get("role") == "ActionResult":
                         surviving = surviving[1:]
                     working_messages[:] = sys_msgs + surviving
