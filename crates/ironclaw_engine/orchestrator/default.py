@@ -775,10 +775,12 @@ def find_cached_plan(docs, goal):
         if doc.get("type", "").lower() == "plan":
             meta = doc.get("metadata", {})
             if isinstance(meta, dict) and not meta.get("is_template", False):
+                steps = meta.get("steps", [])
+                if not (isinstance(steps, list) and steps):
+                    continue
                 confidence = meta.get("confidence", 0.0)
                 if confidence > best_confidence:
                     best_confidence = confidence
-                    steps = meta.get("steps", [])
                     best = {
                         "steps": steps,
                         "confidence": confidence,
@@ -1266,17 +1268,23 @@ def run_loop(context, goal, actions, state, config):
                         if non_sys_msgs[ri].get("role", "").lower() == "user":
                             last_user_idx = ri
                             break
-                    surviving = []
-                    to_drop = n_dropped
-                    for mi, m in enumerate(non_sys_msgs):
-                        if to_drop > 0 and mi != last_user_idx:
-                            to_drop -= 1
-                        else:
-                            surviving.append(m)
-                    while surviving and surviving[0].get("role") == "ActionResult":
-                        surviving = surviving[1:]
-                    working_messages[:] = sys_msgs + surviving
-                    state["working_messages"] = working_messages
+                    if last_user_idx is None:
+                        # No user message in the transcript (e.g. pure actions path with
+                        # only System / Assistant / ActionResult roles). Cannot safely drop
+                        # without an anchor; skip trimming to avoid emptying the history.
+                        pass
+                    else:
+                        surviving = []
+                        to_drop = n_dropped
+                        for mi, m in enumerate(non_sys_msgs):
+                            if to_drop > 0 and mi != last_user_idx:
+                                to_drop -= 1
+                            else:
+                                surviving.append(m)
+                        while surviving and surviving[0].get("role") == "ActionResult":
+                            surviving = surviving[1:]
+                        working_messages[:] = sys_msgs + surviving
+                        state["working_messages"] = working_messages
 
         # 4. Call LLM
         __emit_event__("step_started", step=step)
