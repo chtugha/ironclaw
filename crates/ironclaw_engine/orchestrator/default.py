@@ -1063,16 +1063,27 @@ def run_loop(context, goal, actions, state, config):
     if parent_context:
         append_system_append(working_messages, "Context from previous step:\n" + parent_context)
 
-    plan_steps, plan_source, plan_docs = run_planning_phase(goal, actions, config, state)
-    if plan_source == "failed":
-        _do_transition("failed", "planning failed", config)
-        _write_last_response(state, working_messages)
-        return complete_result(state, "failed", error="Could not generate a plan for the given goal.")
-    if plan_source == "decompose":
-        _write_last_response(state, working_messages)
-        return run_decomposition_loop(plan_steps, goal, actions, config, state)
-    state["plan_steps"] = plan_steps
-    state.setdefault("plan_current_step", 0)
+    if state.get("plan_steps"):
+        # Resuming from a checkpoint (gate pause, approval, authentication
+        # suspend): reuse the previously generated plan.  Re-running
+        # run_planning_phase would (a) waste a planning LLM call that counts
+        # against the local model's token budget, (b) create a duplicate plan
+        # doc and overwrite state["active_plan_doc_id"], orphaning the
+        # original doc so __record_skill_usage__ is never called for it and
+        # plan confidence tracking silently breaks.
+        plan_steps = state["plan_steps"]
+        plan_docs = None
+    else:
+        plan_steps, plan_source, plan_docs = run_planning_phase(goal, actions, config, state)
+        if plan_source == "failed":
+            _do_transition("failed", "planning failed", config)
+            _write_last_response(state, working_messages)
+            return complete_result(state, "failed", error="Could not generate a plan for the given goal.")
+        if plan_source == "decompose":
+            _write_last_response(state, working_messages)
+            return run_decomposition_loop(plan_steps, goal, actions, config, state)
+        state["plan_steps"] = plan_steps
+        state.setdefault("plan_current_step", 0)
 
     for step in range(step_count, max_iterations):
         # 1. Check signals
