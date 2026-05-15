@@ -248,4 +248,28 @@ pub trait Store: Send + Sync {
             reason: format!("Store::list_all_missions not implemented for project '{project_id}'"),
         })
     }
+
+    // ── Lightweight KV store (system state) ────────────────
+
+    /// Persist a system-level key-value pair.
+    ///
+    /// Used for small, infrequently-written system state (e.g. the idle
+    /// activity timestamp). Persistence is best-effort: callers must handle
+    /// `Ok(())` even when the underlying store silently drops the write.
+    /// The default implementation is a no-op (in-memory-only stores and test
+    /// stores that do not need persistence return `Ok(())` here).
+    async fn set_kv(&self, key: &str, value: &str) -> Result<(), EngineError> {
+        let _ = (key, value);
+        Ok(())
+    }
+
+    /// Retrieve a system-level key-value pair previously stored with [`set_kv`].
+    ///
+    /// Returns `Ok(None)` when the key does not exist or the store does not
+    /// support persistence. The default implementation always returns
+    /// `Ok(None)`.
+    async fn get_kv(&self, key: &str) -> Result<Option<String>, EngineError> {
+        let _ = key;
+        Ok(None)
+    }
 }

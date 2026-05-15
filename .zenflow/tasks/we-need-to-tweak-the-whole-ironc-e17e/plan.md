@@ -376,6 +376,7 @@ Changes to `crates/ironclaw_engine/orchestrator/default.py`:
 Verification: Python syntax check (`python3 -m py_compile default.py`). Manual trace of planning + decomposition flow.
 
 ### [x] Step 12: Implement plan templates loader
+<!-- chat-id: 30d087d5-0897-49e2-969e-3b9075f132d8 -->
 
 Load bundled plan templates at startup as described in spec.md §3.5.5.
 
@@ -391,6 +392,7 @@ Unit tests:
 Verification: `cargo check --workspace` compiles; unit tests pass.
 
 ### [x] Step 13: Implement `MissionManager` idle mode
+<!-- chat-id: b4ac2a14-8f49-4d04-b7b1-34fae49cd9bc -->
 
 Add the `Idle` cadence and `is_system_idle()` logic as described in spec.md §3.6.
 

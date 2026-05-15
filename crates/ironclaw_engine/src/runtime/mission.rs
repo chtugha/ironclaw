@@ -358,6 +358,23 @@ impl MissionManager {
     /// the scheduling fix — without this, legacy cron missions would remain
     /// stuck with `next_fire_at = None` and never fire.
     pub async fn bootstrap_project(&self, project_id: ProjectId) -> Result<usize, EngineError> {
+        // Restore the idle activity timestamp from the previous run so the Idle
+        // cadence threshold is computed against real wall-clock elapsed time, not
+        // from the process start time. A missing or unparseable value is silently
+        // ignored — the in-memory default (Utc::now()) is a safe conservative
+        // choice that prevents idle missions from firing immediately after restart.
+        match self.store.get_kv("system.last_activity_at").await {
+            Ok(Some(ts)) => match ts.parse::<chrono::DateTime<chrono::Utc>>() {
+                Ok(dt) => {
+                    *self.last_activity_at.write().await = dt;
+                    debug!("restored last_activity_at from store: {dt}");
+                }
+                Err(e) => debug!("ignoring unparseable last_activity_at '{ts}': {e}"),
+            },
+            Ok(None) => {}
+            Err(e) => debug!("failed to load last_activity_at from store: {e}"),
+        }
+
         // System operation: load all missions for the project regardless of user.
         let missions = self.store.list_all_missions(project_id).await?;
         let mut active_ids = Vec::new();
@@ -1828,6 +1845,13 @@ impl MissionManager {
             map.retain(|_, last| now.signed_duration_since(*last) < cooldown);
         }
 
+        // At most one `Idle`-cadence mission fires per tick cycle.
+        // Idle missions are background maintenance tasks; firing multiple
+        // simultaneously when conditions are met would race over shared
+        // state. The first eligible mission (in `active` insertion order)
+        // gets the slot; others wait for the next tick.
+        let mut fired_idle_this_tick = false;
+
         for mid in active_ids {
             // Per-mission error isolation: a transient store/load error or a
             // single fire failure must not abort the entire tick — the other
@@ -1851,7 +1875,7 @@ impl MissionManager {
                 | MissionCadence::OnSystemEvent { .. }
                 | MissionCadence::Webhook { .. } => false,
                 MissionCadence::Idle { threshold_secs } => {
-                    self.is_system_idle(*threshold_secs).await
+                    !fired_idle_this_tick && self.is_system_idle(*threshold_secs).await
                 }
             };
 
@@ -1917,8 +1941,14 @@ impl MissionManager {
             // than its cooldown will simply skip the intervening firings
             // rather than backlog them. Cron missions are fired with the
             // mission's own user_id so artifacts stay tenant-scoped.
+            let is_idle_cadence = matches!(&mission.cadence, MissionCadence::Idle { .. });
             match self.fire_mission(mid, &mission.user_id, None).await {
-                Ok(Some(tid)) => spawned.push(tid),
+                Ok(Some(tid)) => {
+                    if is_idle_cadence {
+                        fired_idle_this_tick = true;
+                    }
+                    spawned.push(tid);
+                }
                 Ok(None) => {}
                 Err(e) => debug!(
                     mission_id = %mid,
@@ -2081,7 +2111,15 @@ impl MissionManager {
     /// that a freshly-finished background job does not immediately satisfy
     /// the `Idle` threshold.
     pub async fn record_activity(&self) {
-        *self.last_activity_at.write().await = chrono::Utc::now();
+        let now = chrono::Utc::now();
+        *self.last_activity_at.write().await = now;
+        if let Err(e) = self
+            .store
+            .set_kv("system.last_activity_at", &now.to_rfc3339())
+            .await
+        {
+            debug!("failed to persist last_activity_at: {e}");
+        }
     }
 
     /// Returns `true` when the system has been idle for at least
@@ -2116,7 +2154,14 @@ impl MissionManager {
         tokio::spawn(async move {
             match tm.join_thread(thread_id).await {
                 Ok(outcome) => {
-                    *last_activity_at.write().await = chrono::Utc::now();
+                    let now = chrono::Utc::now();
+                    *last_activity_at.write().await = now;
+                    if let Err(e) = store
+                        .set_kv("system.last_activity_at", &now.to_rfc3339())
+                        .await
+                    {
+                        debug!("failed to persist last_activity_at after thread completion: {e}");
+                    }
                     if let Err(e) = process_mission_outcome_and_notify(
                         &store,
                         effects.as_ref(),
@@ -3390,6 +3435,7 @@ mod tests {
         threads: tokio::sync::RwLock<HashMap<ThreadId, Thread>>,
         missions: tokio::sync::RwLock<HashMap<MissionId, Mission>>,
         docs: tokio::sync::RwLock<Vec<MemoryDoc>>,
+        kv: tokio::sync::RwLock<HashMap<String, String>>,
         /// Optional gate that blocks the next `save_mission` call until
         /// the test releases it. Used by `fire_mission_arms_cooldown_before_save`
         /// to deterministically observe the in-flight save state.
@@ -3405,6 +3451,7 @@ mod tests {
                 threads: tokio::sync::RwLock::new(HashMap::new()),
                 missions: tokio::sync::RwLock::new(HashMap::new()),
                 docs: tokio::sync::RwLock::new(Vec::new()),
+                kv: tokio::sync::RwLock::new(HashMap::new()),
                 save_mission_gate: tokio::sync::Mutex::new(None),
                 save_mission_started: tokio::sync::Notify::new(),
             }
@@ -3605,6 +3652,18 @@ mod tests {
                 mission.status = status;
             }
             Ok(())
+        }
+
+        async fn set_kv(&self, key: &str, value: &str) -> Result<(), EngineError> {
+            self.kv
+                .write()
+                .await
+                .insert(key.to_string(), value.to_string());
+            Ok(())
+        }
+
+        async fn get_kv(&self, key: &str) -> Result<Option<String>, EngineError> {
+            Ok(self.kv.read().await.get(key).cloned())
         }
     }
 
@@ -8125,6 +8184,115 @@ mod tests {
         assert!(
             !mgr.is_system_idle(60).await,
             "system must not be idle immediately after record_activity"
+        );
+    }
+
+    /// `record_activity` persists `last_activity_at` to the store so the
+    /// idle timer survives a simulated process restart.
+    #[tokio::test]
+    async fn record_activity_persists_to_store() {
+        let store = Arc::new(TestStore::new());
+        let mgr = make_mission_manager(Arc::clone(&store) as Arc<dyn Store>);
+
+        mgr.record_activity().await;
+
+        // The timestamp must have been written to the KV store.
+        let persisted = store
+            .get_kv("system.last_activity_at")
+            .await
+            .expect("get_kv must not fail");
+        assert!(
+            persisted.is_some(),
+            "record_activity must persist last_activity_at to the store"
+        );
+
+        // The persisted value must be a valid RFC3339 datetime.
+        let ts = persisted.unwrap();
+        assert!(
+            ts.parse::<chrono::DateTime<chrono::Utc>>().is_ok(),
+            "persisted last_activity_at must be a valid RFC3339 datetime, got: {ts}"
+        );
+    }
+
+    /// `bootstrap_project` restores `last_activity_at` from the store so
+    /// the idle threshold is computed against real elapsed time after restart.
+    #[tokio::test]
+    async fn bootstrap_restores_last_activity_at() {
+        let store = Arc::new(TestStore::new());
+        let project_id = ProjectId::new();
+
+        // Seed a past timestamp — 10 minutes ago — as if written by the previous run.
+        let past = chrono::Utc::now() - chrono::Duration::minutes(10);
+        store
+            .set_kv("system.last_activity_at", &past.to_rfc3339())
+            .await
+            .expect("set_kv must not fail");
+
+        let mgr = make_mission_manager(Arc::clone(&store) as Arc<dyn Store>);
+
+        // Before bootstrap, last_activity_at is Utc::now() (fresh process start).
+        let before = *mgr.last_activity_at.read().await;
+        assert!(
+            (chrono::Utc::now() - before).num_seconds().abs() < 2,
+            "before bootstrap, last_activity_at should be approximately now"
+        );
+
+        // Bootstrap must restore the persisted past timestamp.
+        mgr.bootstrap_project(project_id).await.unwrap();
+
+        let after = *mgr.last_activity_at.read().await;
+        let diff = (after - past).num_seconds().abs();
+        assert!(
+            diff < 2,
+            "bootstrap_project must restore last_activity_at from the store (diff: {diff}s)"
+        );
+
+        // With the restored timestamp (10 min ago), the 60 s threshold is met.
+        assert!(
+            mgr.is_system_idle(60).await,
+            "is_system_idle must be true after bootstrap restores a past last_activity_at"
+        );
+    }
+
+    /// Only one `Idle`-cadence mission fires per tick cycle even when
+    /// multiple missions have met their idle threshold.
+    #[tokio::test]
+    async fn tick_fires_only_first_idle_mission_per_tick() {
+        let store = Arc::new(TestStore::new());
+        let mgr = make_mission_manager(Arc::clone(&store) as Arc<dyn Store>);
+        let project_id = ProjectId::new();
+
+        // Create two idle missions with identical thresholds.
+        mgr.create_mission(
+            project_id,
+            "test-user",
+            "idle mission A",
+            "run when idle",
+            MissionCadence::Idle { threshold_secs: 60 },
+            Vec::new(),
+        )
+        .await
+        .unwrap();
+        mgr.create_mission(
+            project_id,
+            "test-user",
+            "idle mission B",
+            "also run when idle",
+            MissionCadence::Idle { threshold_secs: 60 },
+            Vec::new(),
+        )
+        .await
+        .unwrap();
+
+        // Push last_activity_at far enough into the past.
+        *mgr.last_activity_at.write().await =
+            chrono::Utc::now() - chrono::Duration::minutes(5);
+
+        let spawned = mgr.tick("test-user").await.unwrap();
+        assert_eq!(
+            spawned.len(),
+            1,
+            "tick must fire at most one idle mission per cycle, even when multiple qualify"
         );
     }
 }

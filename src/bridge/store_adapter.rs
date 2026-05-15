@@ -73,6 +73,7 @@ const STEPS_PREFIX: &str = ".system/engine/runtime/steps";
 const EVENTS_PREFIX: &str = ".system/engine/runtime/events";
 const LEASES_PREFIX: &str = ".system/engine/runtime/leases";
 const CONVERSATIONS_PREFIX: &str = ".system/engine/runtime/conversations";
+const KV_PREFIX: &str = ".system/engine/runtime/kv";
 
 /// Legacy `engine/...` root used before #2049 moved engine state under
 /// `.system/engine/...`. `migrate_legacy_engine_paths` rewrites any document
@@ -1959,6 +1960,42 @@ impl Store for HybridStore {
                 .await;
         }
         Ok(())
+    }
+
+    async fn set_kv(&self, key: &str, value: &str) -> Result<(), EngineError> {
+        let safe_key: String = key
+            .chars()
+            .map(|c| {
+                if c.is_alphanumeric() || c == '-' || c == '_' {
+                    c
+                } else {
+                    '_'
+                }
+            })
+            .collect();
+        self.persist_text(format!("{KV_PREFIX}/{safe_key}"), value)
+            .await;
+        Ok(())
+    }
+
+    async fn get_kv(&self, key: &str) -> Result<Option<String>, EngineError> {
+        let Some(ws) = self.workspace.as_ref() else {
+            return Ok(None);
+        };
+        let safe_key: String = key
+            .chars()
+            .map(|c| {
+                if c.is_alphanumeric() || c == '-' || c == '_' {
+                    c
+                } else {
+                    '_'
+                }
+            })
+            .collect();
+        match ws.read(&format!("{KV_PREFIX}/{safe_key}")).await {
+            Ok(doc) => Ok(Some(doc.content.trim().to_string())),
+            Err(_) => Ok(None),
+        }
     }
 }
 
