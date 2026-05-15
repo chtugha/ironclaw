@@ -415,6 +415,7 @@ Unit tests:
 Verification: `cargo check --workspace` compiles; unit tests pass.
 
 ### [x] Step 14: Add local browser tool (Playwright MCP) registry entry and URL filter
+<!-- chat-id: cd76f2f0-b9e3-43bb-b625-bd7fe85174ee -->
 
 Add the local browser tool registry entry and the MCP request interceptor as described in spec.md §3.4.1.
 
@@ -430,7 +431,8 @@ Unit tests:
 
 Verification: `cargo check --workspace` compiles; unit tests for URL filter pass.
 
-### [ ] Step 15: Add local tool registry manifests (CalDAV, notes, local-search)
+### [x] Step 15: Add local tool registry manifests (CalDAV, notes, local-search)
+<!-- chat-id: ba62bb38-a353-4f97-af8f-5d617699b443 -->
 
 Create the remaining local tool registry entries described in spec.md §3.4.2.
 
@@ -452,7 +454,8 @@ Unit tests for `src/tools/builtin/local_search.rs`:
 
 Verification: `cargo check --workspace` compiles; JSON files are valid; unit tests pass.
 
-### [ ] Step 16: Rewrite and trim bundled skills for local LLM use
+### [x] Step 16: Rewrite and trim bundled skills for local LLM use
+<!-- chat-id: 32a8461d-6b0e-4afa-8d62-e47fb57e9ccd -->
 
 Rewrite or trim all bundled skills to comply with token budget caps as specified in spec.md §3.4.3 and requirements.md REQ-4.5, REQ-4.6.
 
@@ -476,7 +479,8 @@ Add startup warning in `src/skills/mod.rs` (or registry discovery pass):
 
 Verification: `cargo check --workspace` compiles; all `SKILL.md` files parse correctly. Each skill's content byte count × 0.25 ≤ declared `max_context_tokens`.
 
-### [ ] Step 17: Wire token budget settings through engine path and add UI field
+### [x] Step 17: Wire token budget settings through engine path and add UI field
+<!-- chat-id: bbbcd562-3dc1-4908-92ce-177c81005688 -->
 
 Wire the token budget settings through the engine v2 path, add the UI field, and update profile defaults as described in spec.md §3.2, §3.7, and requirements.md REQ-2.2, REQ-2.3.
 
@@ -503,6 +507,7 @@ Unit tests:
 Verification: `cargo check --workspace` compiles; settings round-trip test passes.
 
 ### [ ] Step 18: Final integration verification
+<!-- chat-id: 11e537a8-3c72-4902-b680-a06618bfc997 -->
 
 Run the full test suite and lint checks. Fix any remaining compile errors or test failures.
 

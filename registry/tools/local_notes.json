@@ -1,0 +1,34 @@
+{
+  "name": "local_notes",
+  "display_name": "Local Notes",
+  "kind": "tool",
+  "version": "0.1.0",
+  "description": "Local plain-text note storage. Append, read, and search notes stored in ~/.ironclaw/notes.md.",
+  "keywords": [
+    "note",
+    "notes",
+    "remember",
+    "memo",
+    "jot",
+    "write down"
+  ],
+  "source": {
+    "dir": "tools-src/local_notes",
+    "capabilities": "local-notes-tool.capabilities.json",
+    "crate_name": "local-notes-tool"
+  },
+  "actions": [
+    "append_note",
+    "read_notes",
+    "search_notes"
+  ],
+  "storage": {
+    "path": "~/.ironclaw/notes.md",
+    "format": "markdown"
+  },
+  "tags": [
+    "default",
+    "local",
+    "notes"
+  ]
+}

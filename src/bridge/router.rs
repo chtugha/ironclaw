@@ -3728,6 +3728,10 @@ async fn handle_with_engine_inner(
         if crate::llm::user_signals_execution_intent(content) {
             cfg.require_action_attempt = true;
         }
+        cfg.max_prompt_tokens = agent.config().max_prompt_tokens;
+        cfg.skill_token_budget = agent.deps.skills_config.max_context_tokens;
+        cfg.plan_confidence_threshold = agent.config().plan_confidence_threshold;
+        cfg.codeact_enabled = agent.config().codeact_enabled;
         cfg
     };
 

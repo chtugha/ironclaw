@@ -401,6 +401,7 @@ I18n.register('en', {
   'tools.defaultBadge': 'Default',
   'tools.noTools': 'No tools registered',
   'tools.saveFailed': 'Failed to save: {message}',
+  'tools.localSearch': 'Local Search',
   
   
   // TEE
@@ -533,10 +534,12 @@ I18n.register('en', {
   'cfg.group.sandbox': 'Sandbox',
   'cfg.group.routines': 'Routines',
   'cfg.group.safety': 'Safety',
-  'cfg.group.skills': 'Skills',
+  'cfg.group.skills': 'Skills & Token Budget',
+  'cfg.group.agent_advanced': 'Advanced (Local LLM)',
   'cfg.group.search': 'Search',
   'cfg.group.tunnel': 'Tunnel',
   'cfg.group.gateway': 'Gateway',
+  'cfg.group.local_search': 'Local Search',
 
   // Inference settings
   'cfg.llm_backend.label': 'Backend',
@@ -591,6 +594,14 @@ I18n.register('en', {
   'cfg.agent_allow_local.label': 'Allow Local Tools',
   'cfg.agent_allow_local.desc': 'Enable local filesystem tool execution',
 
+  // Agent advanced (local LLM) settings
+  'cfg.agent_max_prompt_tokens.label': 'Max Total Prompt Tokens',
+  'cfg.agent_max_prompt_tokens.desc': 'Maximum tokens for the full prompt (system + skills + history). Must be >= skill context token size',
+  'cfg.agent_plan_confidence.label': 'Plan Confidence Threshold',
+  'cfg.agent_plan_confidence.desc': 'Minimum confidence score (0.0–1.0) to reuse a cached plan',
+  'cfg.agent_codeact_enabled.label': 'Enable CodeAct for Local Models',
+  'cfg.agent_codeact_enabled.desc': 'Force CodeAct mode on (true) or off (false). Leave unset for auto-detection',
+
   // Heartbeat settings
   'cfg.heartbeat_enabled.label': 'Enabled',
   'cfg.heartbeat_enabled.desc': 'Run periodic background checks',
@@ -634,8 +645,12 @@ I18n.register('en', {
   // Skills settings
   'cfg.skills_max_active.label': 'Max Active Skills',
   'cfg.skills_max_active.desc': 'Maximum skills active simultaneously',
-  'cfg.skills_max_tokens.label': 'Max Context Tokens',
-  'cfg.skills_max_tokens.desc': 'Token budget for skill prompts',
+  'cfg.skills_max_tokens.label': 'Skill Context Token Size',
+  'cfg.skills_max_tokens.desc': 'Token budget for skill prompts (must be <= max total prompt tokens)',
+
+  // Local search settings
+  'cfg.local_search_allow_global.label': 'Allow Whole-Filesystem Search',
+  'cfg.local_search_allow_global.desc': 'When enabled, the local_search tool may search outside the workspace directory',
 
   // Search settings
   'cfg.search_fusion.label': 'Fusion Strategy',

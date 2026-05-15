@@ -13,7 +13,7 @@
 use crate::types::LoadedSkill;
 
 /// Default maximum context tokens allocated to skills.
-pub const MAX_SKILL_CONTEXT_TOKENS: usize = 4000;
+pub const MAX_SKILL_CONTEXT_TOKENS: usize = 2048;
 
 /// Maximum keyword score cap per skill to prevent gaming via keyword stuffing.
 /// Even if a skill has 20 keywords, it can earn at most this many keyword points.
@@ -62,9 +62,11 @@ enum TrySelectOutcome {
 /// Estimate the token cost of loading a skill's prompt into the LLM
 /// context. Prefers the declared `max_context_tokens` but falls back
 /// to the actual length-based estimate (and warns) if the declaration
-/// is implausibly low relative to the prompt content. Enforces a
-/// minimum of 1 token so a `max_context_tokens: 0` declaration can't
-/// bypass budgeting.
+/// is implausibly low relative to the prompt content.
+///
+/// Note: skills with `max_context_tokens == 0` are already excluded by
+/// the zero-budget pre-filter in `prefilter_skills` before reaching
+/// this function. The `.max(1)` floor is a safety belt only.
 fn skill_token_cost(skill: &LoadedSkill) -> usize {
     let declared_tokens = skill.manifest.activation.max_context_tokens;
     // Rough token estimate: ~0.25 tokens per byte (~4 bytes per token for English prose)
@@ -168,14 +170,23 @@ pub fn prefilter_skills<'a>(
     let message_lower = message.to_lowercase();
 
     // Build name → skill lookup for chain-loading companion resolution.
+    // Excludes zero-budget skills so companions with max_context_tokens == 0
+    // cannot bypass the pre-filter via chain-loading (mirrors Python select_skills
+    // which builds by_name from the already-filtered list).
     let by_name: std::collections::HashMap<&str, &'a LoadedSkill> = available_skills
         .iter()
+        .filter(|s| s.manifest.activation.max_context_tokens != 0)
         .map(|s| (s.manifest.name.as_str(), s))
         .collect();
 
     let mut scored: Vec<ScoredSkill<'a>> = available_skills
         .iter()
         .filter_map(|skill| {
+            // Zero-budget pre-filter: skills with no declared token budget
+            // cannot be injected into prompts — skip before scoring.
+            if skill.manifest.activation.max_context_tokens == 0 {
+                return None;
+            }
             // Setup-marker exclusion: a one-time setup skill whose
             // marker file already exists in the workspace has finished
             // its job. Skip scoring entirely so it can't burn budget.
@@ -483,7 +494,7 @@ mod tests {
                     exclude_keywords: vec![],
                     patterns: pattern_strings,
                     tags: tag_vec,
-                    max_context_tokens: 1000,
+                    max_context_tokens: 256,
                     setup_marker: None,
                 },
                 credentials: vec![],
@@ -681,7 +692,7 @@ mod tests {
     }
 
     #[test]
-    fn test_zero_context_tokens_still_costs_budget() {
+    fn test_zero_context_tokens_excluded_by_prefilter() {
         let mut skill = make_skill("free", &["test"], &[], &[]);
         skill.manifest.activation.max_context_tokens = 0;
         skill.prompt_content = String::new();
@@ -691,7 +702,25 @@ mod tests {
 
         let skills = vec![skill, skill2];
         let result = prefilter_no_markers("test", &skills, 5, 1);
+        assert_eq!(result.len(), 0);
+    }
+
+    #[test]
+    fn test_zero_budget_companion_not_chain_loaded() {
+        // A zero-budget companion listed in requires.skills must not bypass
+        // the pre-filter via chain-loading. by_name excludes zero-budget skills
+        // so the companion lookup returns None and the companion is silently skipped.
+        let mut parent = make_skill("bundle", &["test"], &[], &[]);
+        parent.manifest.requires.skills = vec!["freebie".to_string()];
+
+        let mut companion = make_skill("freebie", &["freebie"], &[], &[]);
+        companion.manifest.activation.max_context_tokens = 0;
+        companion.prompt_content = "Some content that would consume tokens".to_string();
+
+        let skills = vec![parent, companion];
+        let result = prefilter_no_markers("test", &skills, 5, MAX_SKILL_CONTEXT_TOKENS);
         assert_eq!(result.len(), 1);
+        assert_eq!(result[0].manifest.name, "bundle");
     }
 
     fn make_skill_with_excludes(

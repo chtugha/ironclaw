@@ -118,6 +118,14 @@ var AGENT_SETTINGS = [
     settings: [
       { key: 'skills.max_active', label: 'cfg.skills_max_active.label', description: 'cfg.skills_max_active.desc', type: 'number', min: 0 },
       { key: 'skills.max_context_tokens', label: 'cfg.skills_max_tokens.label', description: 'cfg.skills_max_tokens.desc', type: 'number', min: 0 },
+      { key: 'agent.max_prompt_tokens', label: 'cfg.agent_max_prompt_tokens.label', description: 'cfg.agent_max_prompt_tokens.desc', type: 'number', min: 1 },
+    ]
+  },
+  {
+    group: 'cfg.group.agent_advanced',
+    settings: [
+      { key: 'agent.plan_confidence_threshold', label: 'cfg.agent_plan_confidence.label', description: 'cfg.agent_plan_confidence.desc', type: 'float', min: 0, max: 1, step: 0.05 },
+      { key: 'agent.codeact_enabled', label: 'cfg.agent_codeact_enabled.label', description: 'cfg.agent_codeact_enabled.desc', type: 'boolean' },
     ]
   },
   {

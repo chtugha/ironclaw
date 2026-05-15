@@ -18,11 +18,11 @@ use crate::tools::builder::{
 use crate::tools::builtin::{
     ApplyPatchTool, CancelJobTool, CreateJobTool, EchoTool, ExtensionInfoTool, FileUndoTool,
     GlobTool, GrepTool, HttpTool, JobEventsTool, JobPromptTool, JobStatusTool, JsonTool,
-    ListDirTool, ListJobsTool, MemoryReadTool, MemorySearchTool, MemoryTreeTool, MemoryWriteTool,
-    PlanUpdateTool, PromptQueue, ReadFileTool, ShellTool, SkillInstallTool, SkillListTool,
-    SkillRemoveTool, TimeTool, ToolActivateTool, ToolAuthTool, ToolInstallTool, ToolListTool,
-    ToolPermissionSetTool, ToolRemoveTool, ToolSearchTool, ToolUpgradeTool, WriteFileTool,
-    shared_file_history, shared_read_file_state,
+    ListDirTool, ListJobsTool, LocalSearchTool, MemoryReadTool, MemorySearchTool, MemoryTreeTool,
+    MemoryWriteTool, PlanUpdateTool, PromptQueue, ReadFileTool, ShellTool, SkillInstallTool,
+    SkillListTool, SkillRemoveTool, TimeTool, ToolActivateTool, ToolAuthTool, ToolInstallTool,
+    ToolListTool, ToolPermissionSetTool, ToolRemoveTool, ToolSearchTool, ToolUpgradeTool,
+    WriteFileTool, shared_file_history, shared_read_file_state,
 };
 use crate::tools::rate_limiter::RateLimiter;
 use crate::tools::tool::{
@@ -108,6 +108,8 @@ const PROTECTED_TOOL_NAMES: &[&str] = &[
     "plan_update",
     // Permission tools
     "tool_permission_set",
+    // Local tools
+    "local_search",
     // Aliases (web_fetch is an alias for http in some contexts)
     "web_fetch",
 ];
@@ -569,8 +571,9 @@ impl ToolRegistry {
         self.register_sync(Arc::new(GlobTool::new()));
         self.register_sync(Arc::new(GrepTool::new()));
         self.register_sync(Arc::new(FileUndoTool::new(file_history)));
+        self.register_sync(Arc::new(LocalSearchTool::new()));
 
-        tracing::debug!("Registered 8 development tools");
+        tracing::debug!("Registered 9 development tools");
     }
 
     /// Register memory tools with a workspace resolver.

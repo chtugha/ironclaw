@@ -560,7 +560,7 @@ def _skill_token_cost(skill, activation):
     """
     declared = max(activation.get("max_context_tokens", 0), 1)
     content = skill.get("content", "")
-    approx = int(len(content) * 0.25) if content else 0
+    approx = int(len(content.encode("utf-8")) * 0.25) if content else 0
     if approx > declared * 2:
         return max(approx, 1)
     return declared

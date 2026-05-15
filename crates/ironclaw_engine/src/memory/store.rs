@@ -70,12 +70,12 @@ fn split_frontmatter(content: &str) -> Option<(&str, &str)> {
 fn yaml_string_value<'a>(frontmatter: &'a str, key: &str) -> Option<&'a str> {
     for line in frontmatter.lines() {
         let line = line.trim();
-        if let Some(rest) = line.strip_prefix(key) {
-            if let Some(rest) = rest.strip_prefix(':') {
-                let v = rest.trim().trim_matches('"').trim_matches('\'');
-                if !v.is_empty() {
-                    return Some(v);
-                }
+        if let Some(rest) = line.strip_prefix(key)
+            && let Some(rest) = rest.strip_prefix(':')
+        {
+            let v = rest.trim().trim_matches('"').trim_matches('\'');
+            if !v.is_empty() {
+                return Some(v);
             }
         }
     }
@@ -86,22 +86,22 @@ fn yaml_string_value<'a>(frontmatter: &'a str, key: &str) -> Option<&'a str> {
 fn yaml_list_value(frontmatter: &str, key: &str) -> Vec<String> {
     for line in frontmatter.lines() {
         let line = line.trim();
-        if let Some(rest) = line.strip_prefix(key) {
-            if let Some(rest) = rest.strip_prefix(':') {
-                let rest = rest.trim();
-                if rest.starts_with('[') && rest.ends_with(']') {
-                    let inner = &rest[1..rest.len() - 1];
-                    return inner
-                        .split(',')
-                        .map(|s| {
-                            s.trim()
-                                .trim_matches('"')
-                                .trim_matches('\'')
-                                .to_string()
-                        })
-                        .filter(|s| !s.is_empty())
-                        .collect();
-                }
+        if let Some(rest) = line.strip_prefix(key)
+            && let Some(rest) = rest.strip_prefix(':')
+        {
+            let rest = rest.trim();
+            if rest.starts_with('[') && rest.ends_with(']') {
+                let inner = &rest[1..rest.len() - 1];
+                return inner
+                    .split(',')
+                    .map(|s| {
+                        s.trim()
+                            .trim_matches('"')
+                            .trim_matches('\'')
+                            .to_string()
+                    })
+                    .filter(|s| !s.is_empty())
+                    .collect();
             }
         }
     }

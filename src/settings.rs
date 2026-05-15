@@ -614,7 +614,7 @@ pub struct AgentSettings {
     pub codeact_enabled: Option<bool>,
 }
 
-fn default_max_prompt_tokens() -> usize {
+pub(crate) fn default_max_prompt_tokens() -> usize {
     8192
 }
 
@@ -978,7 +978,7 @@ fn default_skills_max_active() -> usize {
     3
 }
 
-fn default_skills_max_context_tokens() -> usize {
+pub(crate) fn default_skills_max_context_tokens() -> usize {
     2048
 }
 

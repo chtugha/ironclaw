@@ -1,0 +1,49 @@
+{
+  "name": "caldav",
+  "display_name": "CalDAV Calendar",
+  "kind": "tool",
+  "version": "0.1.0",
+  "wit_version": "0.3.0",
+  "description": "CalDAV calendar and task management. Manage calendars, events, and todos on any CalDAV-compatible server (Nextcloud, Radicale, iCloud, etc.).",
+  "keywords": [
+    "calendar",
+    "events",
+    "schedule",
+    "meeting",
+    "todo",
+    "task",
+    "caldav"
+  ],
+  "source": {
+    "dir": "tools-src/caldav",
+    "capabilities": "caldav-tool.capabilities.json",
+    "crate_name": "caldav-tool"
+  },
+  "actions": [
+    "list_calendars",
+    "list_events",
+    "create_event",
+    "update_event",
+    "delete_event",
+    "list_todos",
+    "create_todo",
+    "update_todo",
+    "delete_todo"
+  ],
+  "auth_summary": {
+    "method": "env",
+    "provider": "CalDAV Server",
+    "secrets": [
+      "CALDAV_URL",
+      "CALDAV_USERNAME",
+      "CALDAV_PASSWORD"
+    ],
+    "shared_auth": null,
+    "setup_url": null
+  },
+  "tags": [
+    "opt-in",
+    "local",
+    "calendar"
+  ]
+}

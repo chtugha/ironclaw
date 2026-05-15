@@ -3296,6 +3296,7 @@ impl ExtensionManager {
         })
     }
 
+    #[allow(clippy::too_many_arguments)]
     async fn install_mcp_stdio(
         &self,
         name: &str,

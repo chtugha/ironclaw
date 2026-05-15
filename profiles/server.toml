@@ -10,6 +10,9 @@
 
 database_backend = "postgres"
 
+[agent]
+max_prompt_tokens = 131072
+
 [sandbox]
 enabled = true
 policy = "readonly"

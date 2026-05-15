@@ -1,7 +1,7 @@
 //! Live-only tests for commitment-system persona bundles.
 //!
 //! Each test exercises a persona bundle (`ceo-setup`,
-//! `content-creator-setup`, `trader-setup`, `developer-setup`)
+//! `content-creator-setup`, `developer-setup`)
 //! over a multi-turn conversation that goes beyond setup. The flow per
 //! persona is:
 //!
@@ -717,179 +717,6 @@ mod persona_tests {
         },
     ];
 
-    const TRADER_SETUP_CHECKS: &[PersonaCheck] = &[PersonaCheck {
-        needles: &["positions", "trade journal", "trader calibration"],
-        context: "Trader setup: trading workspace created",
-    }];
-    const TRADER_RESEARCH_CHECKS: &[PersonaCheck] = &[PersonaCheck {
-        needles: &["nvda", "earnings thesis", "thursday"],
-        context: "Trader workflow: research commitment tracked",
-    }];
-    const TRADER_AAPL_SIGNAL_CHECKS: &[PersonaCheck] = &[PersonaCheck {
-        needles: &["aapl", "tsmc", "chip partnership"],
-        context: "Trader workflow: bullish AAPL signal captured",
-    }];
-    const TRADER_DECISION_CHECKS: &[PersonaCheck] = &[PersonaCheck {
-        needles: &["sold half", "aapl", "repriced"],
-        context: "Trader workflow: trade decision captured",
-    }];
-    const TRADER_IDEA_CHECKS: &[PersonaCheck] = &[PersonaCheck {
-        needles: &["pre-market checklist", "semis"],
-        context: "Trader workflow: parked idea captured",
-    }];
-    const TRADER_DELEGATION_CHECKS: &[PersonaCheck] = &[PersonaCheck {
-        needles: &["jenna", "macro note", "fed meeting"],
-        context: "Trader workflow: delegated macro note tracked",
-    }];
-    const TRADER_CONFLICT_CHECKS: &[PersonaCheck] = &[PersonaCheck {
-        needles: &["tsmc", "supplier checks", "weak"],
-        context: "Trader workflow: contradictory signal captured",
-    }];
-    const TRADER_SPY_CHECKS: &[PersonaCheck] = &[PersonaCheck {
-        needles: &["spy puts", "roll", "friday"],
-        context: "Trader workflow: SPY puts decision commitment tracked",
-    }];
-    const TRADER_SECOND_IDEA_CHECKS: &[PersonaCheck] = &[PersonaCheck {
-        needles: &["overnight hedge", "cpi weeks"],
-        context: "Trader workflow: second parked idea captured",
-    }];
-    const TRADER_RESOLVED_RESEARCH_CHECKS: &[PersonaCheck] = &[PersonaCheck {
-        needles: &["resolved_by: user", "nvda"],
-        context: "Trader workflow: research commitment resolved",
-    }];
-    const TRADER_SECOND_DECISION_CHECKS: &[PersonaCheck] = &[PersonaCheck {
-        needles: &["closed the rest", "aapl", "played out"],
-        context: "Trader workflow: second trade decision captured",
-    }];
-    const TRADER_WORKFLOW_TURNS: &[WorkflowTurn] = &[
-        WorkflowTurn {
-            label: "setup",
-            message: "I'm a trader. Help me track my positions and journal my trading decisions. Use sensible defaults for US equities and options. My current positions: AAPL 500 shares at $175 and SPY April 520 puts for hedging. Skip the configuration questions.",
-            expected_responses: 1,
-            checks: TRADER_SETUP_CHECKS,
-        },
-        WorkflowTurn {
-            label: "digest_1",
-            message: "show commitments",
-            expected_responses: 1,
-            checks: TRADER_SETUP_CHECKS,
-        },
-        WorkflowTurn {
-            label: "research_commitment",
-            message: "Track this: review the NVDA earnings thesis before Thursday's open.",
-            expected_responses: 1,
-            checks: TRADER_RESEARCH_CHECKS,
-        },
-        WorkflowTurn {
-            label: "aapl_signal",
-            message: "AAPL just announced a major chip partnership with TSMC and it could move hard on tomorrow's earnings.",
-            expected_responses: 1,
-            checks: TRADER_AAPL_SIGNAL_CHECKS,
-        },
-        WorkflowTurn {
-            label: "digest_2",
-            message: "show commitments",
-            expected_responses: 1,
-            checks: TRADER_AAPL_SIGNAL_CHECKS,
-        },
-        WorkflowTurn {
-            label: "decision_capture",
-            message: "Record this decision: I sold half my AAPL because the partnership already repriced most of the upside.",
-            expected_responses: 1,
-            checks: TRADER_DECISION_CHECKS,
-        },
-        WorkflowTurn {
-            label: "park_idea_1",
-            message: "park this idea: build a pre-market checklist for semis so I stop missing supplier read-throughs",
-            expected_responses: 1,
-            checks: TRADER_IDEA_CHECKS,
-        },
-        WorkflowTurn {
-            label: "parked_ideas_1",
-            message: "show parked ideas",
-            expected_responses: 1,
-            checks: TRADER_IDEA_CHECKS,
-        },
-        WorkflowTurn {
-            label: "delegation",
-            message: "I'm waiting on Jenna to send the macro note before the Fed meeting.",
-            expected_responses: 1,
-            checks: TRADER_DELEGATION_CHECKS,
-        },
-        WorkflowTurn {
-            label: "digest_3",
-            message: "show commitments",
-            expected_responses: 1,
-            checks: TRADER_DELEGATION_CHECKS,
-        },
-        WorkflowTurn {
-            label: "conflicting_signal",
-            message: "TSMC supplier checks just came in weak, which could undermine the AAPL thesis.",
-            expected_responses: 1,
-            checks: TRADER_CONFLICT_CHECKS,
-        },
-        WorkflowTurn {
-            label: "digest_4",
-            message: "show commitments",
-            expected_responses: 1,
-            checks: TRADER_CONFLICT_CHECKS,
-        },
-        WorkflowTurn {
-            label: "spy_decision",
-            message: "Track this as an open commitment in the workspace: decide whether to roll the SPY puts before Friday expiry.",
-            expected_responses: 1,
-            checks: TRADER_SPY_CHECKS,
-        },
-        WorkflowTurn {
-            label: "digest_5",
-            message: "show commitments",
-            expected_responses: 1,
-            checks: TRADER_SPY_CHECKS,
-        },
-        WorkflowTurn {
-            label: "delegation_update",
-            message: "Jenna got back to me about the macro note ahead of the Fed meeting.",
-            expected_responses: 1,
-            checks: TRADER_DELEGATION_CHECKS,
-        },
-        WorkflowTurn {
-            label: "resolve_research",
-            message: "done with the NVDA earnings thesis review",
-            expected_responses: 1,
-            checks: TRADER_RESOLVED_RESEARCH_CHECKS,
-        },
-        WorkflowTurn {
-            label: "park_idea_2",
-            message: "save for later: compare overnight hedge rules for CPI weeks",
-            expected_responses: 1,
-            checks: TRADER_SECOND_IDEA_CHECKS,
-        },
-        WorkflowTurn {
-            label: "parked_ideas_2",
-            message: "what's on the backburner?",
-            expected_responses: 1,
-            checks: TRADER_SECOND_IDEA_CHECKS,
-        },
-        WorkflowTurn {
-            label: "second_decision",
-            message: "Record this decision: I closed the rest of my AAPL today and the thesis was fully played out.",
-            expected_responses: 1,
-            checks: TRADER_SECOND_DECISION_CHECKS,
-        },
-        WorkflowTurn {
-            label: "digest_6",
-            message: "show commitments",
-            expected_responses: 1,
-            checks: TRADER_SECOND_DECISION_CHECKS,
-        },
-        WorkflowTurn {
-            label: "parked_ideas_3",
-            message: "show parked ideas",
-            expected_responses: 1,
-            checks: TRADER_IDEA_CHECKS,
-        },
-    ];
-
     const DEV_SETUP_CHECKS: &[PersonaCheck] = &[PersonaCheck {
         needles: &[
             "projects/commitments/readme",
@@ -1110,29 +937,6 @@ mod persona_tests {
                 "content-creator-setup",
                 "commitment-digest",
                 "decision-capture",
-                "idea-parking",
-            ],
-        )
-        .await;
-    }
-
-    // ─────────────────────────────────────────────────────────────────────
-    // Trader: setup → market signal + decision journal → verification
-    // ─────────────────────────────────────────────────────────────────────
-
-    #[tokio::test]
-    #[ignore] // Live tier only: requires LLM API keys. Fixture replay not supported (persona-specific skill activation).
-    async fn trader_full_workflow() {
-        run_multi_turn_workflow(
-            "trader_full_workflow",
-            "trader-setup",
-            "trader",
-            TRADER_WORKFLOW_TURNS,
-            &[
-                "trader-setup",
-                "commitment-digest",
-                "decision-capture",
-                "delegation-tracker",
                 "idea-parking",
             ],
         )

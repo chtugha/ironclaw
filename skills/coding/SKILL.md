@@ -14,7 +14,6 @@ activation:
     - "class"
     - "file"
     - "module"
-    - "test"
     - "compile"
     - "build"
     - "error"
@@ -28,35 +27,28 @@ activation:
     - "routine"
     - "schedule"
   patterns:
-    - "(?i)(add|remove|update|modify|create|delete|rename|move)\\s.*(file|function|class|method|variable|import)"
+    - "(?i)(add|remove|update|modify|create|delete|rename|move)\\s.*(file|function|class|method)"
     - "(?i)(fix|debug|investigate|trace|find)\\s.*(bug|error|issue|crash|fail)"
   tags:
     - "development"
     - "coding"
-  max_context_tokens: 1500
+  max_context_tokens: 256
 ---
 
 # Coding Best Practices
 
-## Tool Usage Discipline
+## Tool Usage
+- `apply_patch` over `write_file` for existing files
+- `read_file` before editing — always
+- `glob` for file discovery, `grep` for content search, `list_dir` for directories
 
-- **Prefer `apply_patch` over `write_file`** for modifying existing files. It sends only the changed portion, preventing accidental full-file rewrites.
-- **Always `read_file` before editing.** Understand the context before changing code. Never edit a file you haven't read.
-- **Use `glob` for file discovery** instead of `shell` with `find` or `ls`. It's faster, safer, and returns structured results sorted by modification time.
-- **Use `grep` for content search** instead of `shell` with `grep` or `rg`. It provides structured output modes (content, file paths, counts) and pagination.
-- **Use `list_dir` for directory exploration** instead of `shell` with `ls`.
-- **Read before writing.** Never create or overwrite a file without reading it first (unless it's genuinely a new file).
+## Change Discipline
+- Minimal changes — don't add features beyond what was asked
+- No unnecessary comments, docstrings, or annotations
+- One change at a time; fix the pattern, not just the instance (use `grep` to find all occurrences)
+- Preserve existing code style, naming, indentation
 
-## Code Change Discipline
-
-- **Minimal changes.** Don't add features, refactor, or "improve" beyond what was asked. A bug fix doesn't need surrounding code cleaned up.
-- **No unnecessary comments or docstrings.** Only add comments where the logic isn't self-evident. Don't add type annotations or docstrings to code you didn't change.
-- **One thing at a time.** Make focused changes, verify with `read_file`, then move to the next change.
-- **Fix the pattern, not just the instance.** When you find a bug, use `grep` to search for all occurrences of the same pattern before committing a fix.
-
-## Code Quality
-
-- Don't introduce security vulnerabilities (command injection, XSS, SQL injection, path traversal).
-- Preserve existing code style and conventions. Match the indentation, naming, and patterns of surrounding code.
-- Test after changes when test infrastructure exists. Use `shell` to run the project's test command.
-- Don't add error handling, fallbacks, or validation for scenarios that can't happen. Trust internal code and framework guarantees.
+## Quality
+- Don't introduce: command injection, XSS, SQL injection, path traversal
+- Test after changes if test infrastructure exists
+- No error handling for impossible scenarios — trust internal guarantees

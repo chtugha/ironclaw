@@ -176,6 +176,19 @@ pub async fn settings_set_handler(
         validate_custom_providers(&body.value).map_err(no_body)?;
     }
 
+    // Guard: plan_confidence_threshold must be in [0.0, 1.0].
+    if key == "agent.plan_confidence_threshold" {
+        validate_plan_confidence_threshold(&body.value)
+            .map_err(|msg| (StatusCode::BAD_REQUEST, msg))?;
+    }
+
+    // Guard: max_prompt_tokens must be >= skills.max_context_tokens.
+    if key == "agent.max_prompt_tokens" || key == "skills.max_context_tokens" {
+        validate_prompt_token_budget(store, &effective_user_id, &key, &body.value)
+            .await
+            .map_err(|msg| (StatusCode::UNPROCESSABLE_ENTITY, msg))?;
+    }
+
     // Extract API keys from LLM settings and vault them in the secrets store.
     // The sanitized value has api_key fields removed (stored encrypted instead).
     let sanitized_value = match key.as_str() {
@@ -412,6 +425,69 @@ async fn rollback_settings_write(
 
 const VALID_ADAPTERS: &[&str] = &["open_ai_completions", "anthropic", "ollama"];
 
+fn validate_plan_confidence_threshold(value: &serde_json::Value) -> Result<(), String> {
+    let v = match value {
+        serde_json::Value::Number(n) => n.as_f64(),
+        _ => None,
+    };
+    match v {
+        Some(f) if (0.0..=1.0).contains(&f) => Ok(()),
+        Some(f) => Err(format!(
+            "plan_confidence_threshold must be between 0.0 and 1.0, got {f}"
+        )),
+        None => Err("plan_confidence_threshold must be a number".to_string()),
+    }
+}
+
+async fn validate_prompt_token_budget(
+    store: &(dyn crate::db::SettingsStore + Send + Sync),
+    user_id: &str,
+    key: &str,
+    value: &serde_json::Value,
+) -> Result<(), String> {
+    let incoming = match value {
+        serde_json::Value::Number(n) => match n.as_u64() {
+            Some(v) => v as usize,
+            None => return Err("Token value must be a non-negative integer".to_string()),
+        },
+        _ => return Err("Token value must be a number".to_string()),
+    };
+
+    let default_max_prompt: usize = crate::settings::default_max_prompt_tokens();
+    let default_skill_budget: usize = crate::settings::default_skills_max_context_tokens();
+
+    let (max_prompt_tokens, skill_token_budget) = if key == "agent.max_prompt_tokens" {
+        let skill_budget = store
+            .get_setting(user_id, "skills.max_context_tokens")
+            .await
+            .ok()
+            .flatten()
+            .and_then(|v| v.as_u64())
+            .map(|v| v as usize)
+            .unwrap_or(default_skill_budget);
+        (incoming, skill_budget)
+    } else {
+        let max_prompt = store
+            .get_setting(user_id, "agent.max_prompt_tokens")
+            .await
+            .ok()
+            .flatten()
+            .and_then(|v| v.as_u64())
+            .map(|v| v as usize)
+            .unwrap_or(default_max_prompt);
+        (max_prompt, incoming)
+    };
+
+    if max_prompt_tokens < skill_token_budget {
+        return Err(
+            "Max total prompt tokens must be greater than or equal to skill context token size"
+                .to_string(),
+        );
+    }
+
+    Ok(())
+}
+
 /// Valid provider ID: lowercase alphanumeric, hyphens, and underscores, 1-64 chars.
 fn is_valid_provider_id(id: &str) -> bool {
     !id.is_empty()
@@ -535,6 +611,17 @@ pub async fn settings_delete_handler(
         )
         .await
         .map_err(no_body)?;
+    }
+
+    if key == "agent.max_prompt_tokens" || key == "skills.max_context_tokens" {
+        let default_value = if key == "agent.max_prompt_tokens" {
+            serde_json::json!(crate::settings::default_max_prompt_tokens())
+        } else {
+            serde_json::json!(crate::settings::default_skills_max_context_tokens())
+        };
+        validate_prompt_token_budget(store, &effective_user_id, &key, &default_value)
+            .await
+            .map_err(|msg| (StatusCode::UNPROCESSABLE_ENTITY, msg))?;
     }
 
     // Snapshot for rollback — see `settings_set_handler` for rationale,
@@ -2448,6 +2535,256 @@ pub(crate) fn infer_is_local(base_url: Option<&str>, adapter: &str) -> bool {
         return crate::tools::mcp::config::is_localhost_url(url);
     }
     false
+}
+
+#[cfg(test)]
+mod token_budget_validation_tests {
+    use super::{validate_plan_confidence_threshold, validate_prompt_token_budget};
+    use async_trait::async_trait;
+    use std::collections::HashMap;
+    use std::sync::RwLock;
+
+    use crate::error::DatabaseError;
+    use crate::history::SettingRow;
+
+    struct InMemorySettingsStore {
+        data: RwLock<HashMap<(String, String), serde_json::Value>>,
+    }
+
+    impl InMemorySettingsStore {
+        fn new() -> Self {
+            Self {
+                data: RwLock::new(HashMap::new()),
+            }
+        }
+
+        fn with_setting(self, user_id: &str, key: &str, value: serde_json::Value) -> Self {
+            self.data
+                .write()
+                .unwrap()
+                .insert((user_id.to_owned(), key.to_owned()), value);
+            self
+        }
+    }
+
+    #[async_trait]
+    impl crate::db::SettingsStore for InMemorySettingsStore {
+        async fn get_setting(
+            &self,
+            user_id: &str,
+            key: &str,
+        ) -> Result<Option<serde_json::Value>, DatabaseError> {
+            Ok(self
+                .data
+                .read()
+                .unwrap()
+                .get(&(user_id.to_owned(), key.to_owned()))
+                .cloned())
+        }
+
+        async fn get_setting_full(
+            &self,
+            _user_id: &str,
+            _key: &str,
+        ) -> Result<Option<SettingRow>, DatabaseError> {
+            Ok(None)
+        }
+
+        async fn set_setting(
+            &self,
+            user_id: &str,
+            key: &str,
+            value: &serde_json::Value,
+        ) -> Result<(), DatabaseError> {
+            self.data
+                .write()
+                .unwrap()
+                .insert((user_id.to_owned(), key.to_owned()), value.clone());
+            Ok(())
+        }
+
+        async fn delete_setting(
+            &self,
+            user_id: &str,
+            key: &str,
+        ) -> Result<bool, DatabaseError> {
+            Ok(self
+                .data
+                .write()
+                .unwrap()
+                .remove(&(user_id.to_owned(), key.to_owned()))
+                .is_some())
+        }
+
+        async fn list_settings(
+            &self,
+            _user_id: &str,
+        ) -> Result<Vec<SettingRow>, DatabaseError> {
+            Ok(vec![])
+        }
+
+        async fn get_all_settings(
+            &self,
+            _user_id: &str,
+        ) -> Result<HashMap<String, serde_json::Value>, DatabaseError> {
+            Ok(HashMap::new())
+        }
+
+        async fn set_all_settings(
+            &self,
+            _user_id: &str,
+            _settings: &HashMap<String, serde_json::Value>,
+        ) -> Result<(), DatabaseError> {
+            Ok(())
+        }
+
+        async fn has_settings(
+            &self,
+            _user_id: &str,
+        ) -> Result<bool, DatabaseError> {
+            Ok(false)
+        }
+    }
+
+    #[test]
+    fn plan_confidence_threshold_valid_range() {
+        let valid_values = [0.0_f64, 0.5, 1.0, 0.6];
+        for v in valid_values {
+            let json = serde_json::json!(v);
+            assert!(
+                validate_plan_confidence_threshold(&json).is_ok(),
+                "expected {v} to be valid"
+            );
+        }
+    }
+
+    #[test]
+    fn plan_confidence_threshold_below_zero_rejected() {
+        let json = serde_json::json!(-0.1_f64);
+        assert!(validate_plan_confidence_threshold(&json).is_err());
+    }
+
+    #[test]
+    fn plan_confidence_threshold_above_one_rejected() {
+        let json = serde_json::json!(1.1_f64);
+        assert!(validate_plan_confidence_threshold(&json).is_err());
+    }
+
+    #[test]
+    fn plan_confidence_threshold_non_number_rejected() {
+        let json = serde_json::json!("high");
+        assert!(validate_plan_confidence_threshold(&json).is_err());
+    }
+
+    #[tokio::test]
+    async fn prompt_tokens_below_skill_budget_rejected() {
+        let store = InMemorySettingsStore::new().with_setting(
+            "user1",
+            "skills.max_context_tokens",
+            serde_json::json!(2048),
+        );
+        let result = validate_prompt_token_budget(
+            &store,
+            "user1",
+            "agent.max_prompt_tokens",
+            &serde_json::json!(1024),
+        )
+        .await;
+        assert!(result.is_err());
+        assert!(result
+            .unwrap_err()
+            .contains("must be greater than or equal to"));
+    }
+
+    #[tokio::test]
+    async fn prompt_tokens_equal_to_skill_budget_accepted() {
+        let store = InMemorySettingsStore::new().with_setting(
+            "user1",
+            "skills.max_context_tokens",
+            serde_json::json!(2048),
+        );
+        let result = validate_prompt_token_budget(
+            &store,
+            "user1",
+            "agent.max_prompt_tokens",
+            &serde_json::json!(2048),
+        )
+        .await;
+        assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn skill_budget_above_prompt_tokens_rejected() {
+        let store = InMemorySettingsStore::new().with_setting(
+            "user1",
+            "agent.max_prompt_tokens",
+            serde_json::json!(4096),
+        );
+        let result = validate_prompt_token_budget(
+            &store,
+            "user1",
+            "skills.max_context_tokens",
+            &serde_json::json!(8192),
+        )
+        .await;
+        assert!(result.is_err());
+        assert!(result
+            .unwrap_err()
+            .contains("must be greater than or equal to"));
+    }
+
+    #[tokio::test]
+    async fn prompt_tokens_above_skill_budget_accepted() {
+        let store = InMemorySettingsStore::new().with_setting(
+            "user1",
+            "skills.max_context_tokens",
+            serde_json::json!(2048),
+        );
+        let result = validate_prompt_token_budget(
+            &store,
+            "user1",
+            "agent.max_prompt_tokens",
+            &serde_json::json!(8192),
+        )
+        .await;
+        assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn delete_skill_budget_rejected_when_prompt_tokens_too_low() {
+        let store = InMemorySettingsStore::new().with_setting(
+            "user1",
+            "agent.max_prompt_tokens",
+            serde_json::json!(1500),
+        );
+        let default_skill = serde_json::json!(crate::settings::default_skills_max_context_tokens());
+        let result = validate_prompt_token_budget(
+            &store,
+            "user1",
+            "skills.max_context_tokens",
+            &default_skill,
+        )
+        .await;
+        assert!(result.is_err(), "deleting skill budget should fail when stored max_prompt_tokens (1500) < default skill budget (2048)");
+    }
+
+    #[tokio::test]
+    async fn delete_prompt_tokens_accepted_when_skill_budget_fits() {
+        let store = InMemorySettingsStore::new().with_setting(
+            "user1",
+            "skills.max_context_tokens",
+            serde_json::json!(1024),
+        );
+        let default_prompt = serde_json::json!(crate::settings::default_max_prompt_tokens());
+        let result = validate_prompt_token_budget(
+            &store,
+            "user1",
+            "agent.max_prompt_tokens",
+            &default_prompt,
+        )
+        .await;
+        assert!(result.is_ok(), "deleting max_prompt_tokens should succeed when default (8192) >= stored skill budget (1024)");
+    }
 }
 
 #[cfg(test)]

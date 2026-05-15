@@ -18,8 +18,7 @@
       "extensions": [
         "mcp-servers/playwright",
         "tools/caldav",
-        "tools/local_notes",
-        "tools/local_search"
+        "tools/local_notes"
       ],
       "shared_auth": null
     }

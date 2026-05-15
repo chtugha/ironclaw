@@ -1,0 +1,24 @@
+{
+  "name": "local_search",
+  "display_name": "Local File Search",
+  "kind": "tool",
+  "version": "0.1.0",
+  "description": "Search files in the local workspace using regex patterns. Scope is limited to the active workspace by default. Global filesystem search can be enabled in Settings \u2192 Tools \u2192 Local Search.",
+  "keywords": [
+    "search",
+    "find",
+    "grep",
+    "locate",
+    "files",
+    "filesystem"
+  ],
+  "actions": [
+    "search_files"
+  ],
+  "settings_gate": "local_search.allow_global_scope",
+  "tags": [
+    "default",
+    "local",
+    "search"
+  ]
+}

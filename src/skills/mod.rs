@@ -22,6 +22,32 @@ use crate::{
 };
 use ironclaw_skills::{LoadedSkill, SkillCredentialLocation, SkillCredentialSpec};
 
+/// Emit a one-per-process-lifetime warning for any skill that has no declared
+/// `max_context_tokens` (i.e. zero). Such skills are excluded from prompt
+/// injection by the zero-budget pre-filter in the selector.
+pub fn warn_zero_budget_skills(skills: &[LoadedSkill]) {
+    use std::collections::HashSet;
+    use std::sync::{Mutex, OnceLock};
+
+    static WARNED: OnceLock<Mutex<HashSet<String>>> = OnceLock::new();
+    let warned = WARNED.get_or_init(|| Mutex::new(HashSet::new()));
+    let mut guard = warned.lock().unwrap_or_else(|e| e.into_inner());
+
+    for skill in skills {
+        if skill.manifest.activation.max_context_tokens == 0 {
+            let name = skill.name().to_string();
+            if guard.insert(name.clone()) {
+                let source = format!("{:?}", skill.source);
+                tracing::warn!(
+                    "Skill '{}' loaded from {} has no declared max_context_tokens and will not be injected into prompts",
+                    name,
+                    source,
+                );
+            }
+        }
+    }
+}
+
 /// Convert a skill credential location to the main crate's [`CredentialLocation`].
 fn convert_credential_location(loc: &SkillCredentialLocation) -> CredentialLocation {
     match loc {

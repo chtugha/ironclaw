@@ -14,6 +14,25 @@ function loadToolsPermissions() {
   }).catch(function(err) {
     container.innerHTML = '<div class="empty-state">' + I18n.t('common.loadFailed') + ': ' + escapeHtml(err.message) + '</div>';
   });
+
+  var lsContainer = document.getElementById('tools-local-search-settings');
+  if (lsContainer) {
+    apiFetch('/api/settings/export').then(function(data) {
+      var settings = data.settings || {};
+      lsContainer.innerHTML = '';
+      var LOCAL_SEARCH_SETTINGS = [
+        {
+          group: 'cfg.group.local_search',
+          settings: [
+            { key: 'local_search.allow_global_scope', label: 'cfg.local_search_allow_global.label', description: 'cfg.local_search_allow_global.desc', type: 'boolean' },
+          ]
+        }
+      ];
+      renderStructuredSettingsInto(lsContainer, LOCAL_SEARCH_SETTINGS, settings, {});
+    }).catch(function(err) {
+      lsContainer.innerHTML = '<div class="empty-state">' + I18n.t('common.loadFailed') + ': ' + escapeHtml(err.message) + '</div>';
+    });
+  }
 }
 
 function renderToolPermissionRow(tool) {
