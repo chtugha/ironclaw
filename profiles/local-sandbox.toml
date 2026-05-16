@@ -11,6 +11,12 @@
 
 database_backend = "libsql"
 
+[agent]
+max_prompt_tokens = 8192
+
+[skills]
+max_context_tokens = 2048
+
 [channels]
 gateway_enabled = false
 cli_mode = "tui"
