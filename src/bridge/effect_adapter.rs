@@ -35,8 +35,9 @@ use crate::context::JobContext;
 use crate::extensions::InstalledExtension;
 use crate::extensions::naming::extension_name_candidates;
 use crate::hooks::{HookEvent, HookOutcome, HookRegistry};
+use crate::ownership::UserRole;
 use crate::tools::ToolRegistry;
-use crate::tools::permissions::PermissionState;
+use crate::tools::permissions::{AdminToolPolicyCache, AdminToolPolicyState, PermissionState, load_cached_admin_tool_policy};
 use crate::tools::rate_limiter::RateLimiter;
 use crate::tools::{ApprovalRequirement, Tool};
 use ironclaw_safety::SafetyLayer;
@@ -84,6 +85,12 @@ pub struct EffectBridgeAdapter {
     /// capabilities like `missions` are registered here in `router.rs` and
     /// would otherwise be invisible to the LLM despite having active leases.
     capability_registry: RwLock<Option<Arc<CapabilityRegistry>>>,
+    /// When true, admin tool policy is enforced: tools in `AdminToolPolicy`
+    /// are stripped from the action inventory before being surfaced to the LLM.
+    /// Mirrors the dispatcher-path `config.multi_tenant` flag.
+    multi_tenant: bool,
+    /// Per-adapter cache for the admin tool policy, loaded once on first use.
+    admin_policy_cache: AdminToolPolicyCache,
 }
 
 struct ToolApprovalContext<'a> {
@@ -127,6 +134,8 @@ impl EffectBridgeAdapter {
             skill_registry: RwLock::new(None),
             workspace_mounts: RwLock::new(None),
             capability_registry: RwLock::new(None),
+            multi_tenant: false,
+            admin_policy_cache: AdminToolPolicyCache::new(),
         }
     }
 
@@ -174,6 +183,16 @@ impl EffectBridgeAdapter {
     /// Mirror the v1 dispatcher behavior for globally auto-approved tools.
     pub fn with_global_auto_approve(mut self, enabled: bool) -> Self {
         self.auto_approve_tools = enabled;
+        self
+    }
+
+    /// Enable multi-tenant admin tool policy enforcement.
+    ///
+    /// When `true`, `available_action_inventory()` strips tools blocked by the
+    /// admin policy before surfacing them to the LLM, matching the behavior of
+    /// the v1 dispatcher path.
+    pub fn with_multi_tenant(mut self, multi_tenant: bool) -> Self {
+        self.multi_tenant = multi_tenant;
         self
     }
 
@@ -1910,7 +1929,7 @@ impl EffectExecutor for EffectBridgeAdapter {
         let extensions = self
             .fetch_extension_map(auth_manager.as_deref(), context)
             .await;
-        ActionProjector::project_inventory(
+        let mut inventory = ActionProjector::project_inventory(
             self.tools.as_ref(),
             auth_manager.as_deref(),
             capability_registry,
@@ -1918,7 +1937,17 @@ impl EffectExecutor for EffectBridgeAdapter {
             context,
             extensions.as_ref(),
         )
-        .await
+        .await?;
+
+        if self.multi_tenant {
+            let db = self.tools.database();
+            let policy_state =
+                load_cached_admin_tool_policy(db, &self.admin_policy_cache).await;
+            apply_admin_policy_to_inventory(&mut inventory, policy_state, &context.user_id, db)
+                .await;
+        }
+
+        Ok(inventory)
     }
 
     async fn available_capabilities(
@@ -2814,6 +2843,76 @@ pub(crate) fn is_v1_only_tool(name: &str) -> bool {
 /// The LLM should not see or call these — auth is handled automatically.
 pub(crate) fn is_v1_auth_tool(name: &str) -> bool {
     matches!(name, "tool_auth" | "tool-auth")
+}
+
+/// Apply the admin tool policy to an `ActionInventory`, removing any actions
+/// that are disabled by policy for the given user.
+///
+/// Mirrors `filter_admin_disabled_tools` from `crate::tools::permissions` but
+/// operates on `ActionDef` items instead of LLM `ToolDefinition` objects.
+/// Admin users are exempt; `FailClosed` clears all inline actions.
+async fn apply_admin_policy_to_inventory(
+    inventory: &mut ActionInventory,
+    policy_state: &AdminToolPolicyState,
+    user_id: &str,
+    db: Option<&std::sync::Arc<dyn crate::db::Database>>,
+) {
+    use std::collections::HashSet;
+
+    let admin_policy = match policy_state {
+        AdminToolPolicyState::Missing => return,
+        AdminToolPolicyState::Loaded(p) => p,
+        AdminToolPolicyState::FailClosed => {
+            inventory.inline.clear();
+            inventory.discoverable.clear();
+            return;
+        }
+    };
+
+    if admin_policy.is_empty() {
+        return;
+    }
+
+    let is_admin = if let Some(db) = db {
+        match db.get_user(user_id).await {
+            Ok(Some(record)) => UserRole::from_db_role(&record.role).is_admin(),
+            Ok(None) => false,
+            Err(e) => {
+                tracing::debug!(
+                    user_id,
+                    error = %e,
+                    "admin policy: failed to look up user role, treating as non-admin"
+                );
+                false
+            }
+        }
+    } else {
+        false
+    };
+
+    if is_admin {
+        return;
+    }
+
+    let user_disabled: HashSet<&str> = admin_policy
+        .user_disabled_tools
+        .get(user_id)
+        .into_iter()
+        .flatten()
+        .map(String::as_str)
+        .collect();
+
+    let blocked = |name: &str| {
+        if admin_policy.disabled_tools.contains(name) || user_disabled.contains(name) {
+            tracing::debug!(tool = name, "Excluding tool disabled by admin policy");
+            true
+        } else {
+            false
+        }
+    };
+
+    inventory.inline.retain(|a| !blocked(&a.name));
+    inventory.discoverable.retain(|a| !blocked(&a.name));
 }
 
 #[cfg(test)]

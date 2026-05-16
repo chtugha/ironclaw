@@ -736,10 +736,10 @@ def is_trivial(goal, config):
     """Heuristic: return True when the goal is simple enough to skip planning."""
     threshold = config.get("trivial_word_threshold", 8)
     words = goal.strip().split()
-    if len(words) <= threshold:
-        if "?" in goal and " and " not in goal.lower() and " then " not in goal.lower():
-            return True
     lower = goal.lower().strip()
+    if len(words) <= threshold:
+        if " and " not in lower and " then " not in lower:
+            return True
     single_step_patterns = [
         r"^what is\b", r"^who is\b", r"^when is\b", r"^where is\b",
         r"^how much\b", r"^how many\b", r"^tell me about\b",
@@ -1063,6 +1063,11 @@ def run_loop(context, goal, actions, state, config):
     if parent_context:
         append_system_append(working_messages, "Context from previous step:\n" + parent_context)
 
+    has_pending_action_result = any(
+        msg.get("role") in ("ActionResult", "action_result")
+        for msg in context
+    ) if context else False
+
     if state.get("plan_steps"):
         # Resuming from a checkpoint (gate pause, approval, authentication
         # suspend): reuse the previously generated plan.  Re-running
@@ -1073,6 +1078,15 @@ def run_loop(context, goal, actions, state, config):
         # plan confidence tracking silently breaks.
         plan_steps = state["plan_steps"]
         plan_docs = None
+    elif has_pending_action_result:
+        # The context already contains an ActionResult — this is a gate
+        # resume (approval, authentication, tool_info). The thread was
+        # mid-execution when paused; skip planning and let the LLM
+        # continue from the injected result.
+        plan_steps = ["Continue from pending action result"]
+        plan_docs = None
+        state["plan_steps"] = plan_steps
+        state.setdefault("plan_current_step", 0)
     else:
         plan_steps, plan_source, plan_docs = run_planning_phase(goal, actions, config, state)
         if plan_source == "failed":
@@ -1146,10 +1160,8 @@ def run_loop(context, goal, actions, state, config):
                 for s in explicit_skills
             )
 
-            system_content = next(
-                (m.get("content", "") for m in working_messages if m.get("role") in ("System", "system")),
-                "",
-            )
+            _sys_msgs = [m.get("content", "") for m in working_messages if m.get("role") in ("System", "system")]
+            system_content = _sys_msgs[0] if _sys_msgs else ""
             plan_anchor_text = state.get("plan_anchor_text", "")
             _normalized_goal = normalize_punctuation(goal)
             guard_skills_input = [
@@ -1247,10 +1259,8 @@ def run_loop(context, goal, actions, state, config):
 
         # Apply token guard for steps > 0: trim history if needed.
         if step > 0:
-            sys_content_gt0 = next(
-                (m.get("content", "") for m in working_messages if m.get("role") in ("System", "system")),
-                "",
-            )
+            _sys_msgs_gt0 = [m.get("content", "") for m in working_messages if m.get("role") in ("System", "system")]
+            sys_content_gt0 = _sys_msgs_gt0[0] if _sys_msgs_gt0 else ""
             non_sys_msgs = [
                 m for m in working_messages
                 if m.get("role") not in ("System", "system")

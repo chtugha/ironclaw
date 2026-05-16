@@ -1574,7 +1574,8 @@ pub async fn init_engine(agent: &Agent) -> Result<(), Error> {
             agent.safety().clone(),
             agent.hooks().clone(),
         )
-        .with_global_auto_approve(agent.config().auto_approve_tools),
+        .with_global_auto_approve(agent.config().auto_approve_tools)
+        .with_multi_tenant(agent.config().multi_tenant),
     );
     // Propagate the trace HTTP interceptor (live recording or replay) so
     // engine tool dispatch records/replays HTTP exchanges. Without this,
