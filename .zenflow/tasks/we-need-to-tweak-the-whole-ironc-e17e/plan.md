@@ -506,7 +506,7 @@ Unit tests:
 
 Verification: `cargo check --workspace` compiles; settings round-trip test passes.
 
-### [ ] Step 18: Final integration verification
+### [x] Step 18: Final integration verification
 <!-- chat-id: 11e537a8-3c72-4902-b680-a06618bfc997 -->
 
 Run the full test suite and lint checks. Fix any remaining compile errors or test failures.
