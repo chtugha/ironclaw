@@ -309,8 +309,9 @@ fn project_latent_action(action: LatentProviderAction) -> ActionDef {
 }
 
 pub(crate) fn default_model_tool_surface(action_name: &str) -> ModelToolSurface {
-    if matches!(action_name, "echo" | "http" | "json" | "time")
+    if matches!(action_name, "echo" | "http" | "json" | "time" | "local_search")
         || action_name.starts_with("memory_")
+        || action_name.starts_with("routine_")
         || action_name.starts_with("skill_")
         || action_name.starts_with("tool_")
     {

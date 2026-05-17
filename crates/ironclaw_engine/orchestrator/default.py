@@ -83,15 +83,23 @@ def strip_quoted_strings(line):
     """Remove double-quoted string literals from a line."""
     result = []
     in_quote = False
-    prev = ""
+    escaped = False
     for ch in line:
-        if ch == '"' and prev != "\\":
+        if escaped:
+            escaped = False
+            if not in_quote:
+                result.append(ch)
+            continue
+        if ch == "\\":
+            escaped = True
+            if not in_quote:
+                result.append(ch)
+            continue
+        if ch == '"':
             in_quote = not in_quote
-            prev = ch
             continue
         if not in_quote:
             result.append(ch)
-        prev = ch
     return "".join(result)
 
 
@@ -345,8 +353,10 @@ def compact_if_needed(state, config):
         "kind": "compaction",
         "index": compaction_count,
         "tokens_before": current_tokens,
-        "messages": snapshot,
+        "message_count": len(snapshot),
     })
+    if len(history) > 3:
+        history[:] = history[-3:]
 
     summary_prompt = (
         "Summarize progress so far in a concise but complete way.\n"
@@ -744,6 +754,10 @@ def is_trivial(goal, config):
         r"^what is\b", r"^who is\b", r"^when is\b", r"^where is\b",
         r"^how much\b", r"^how many\b", r"^tell me about\b",
         r"^define\b", r"^explain\b", r"^describe\b",
+        r"^create\b.*\broutine\b",
+        r"^set\s+up\b.*\broutine\b",
+        r"^schedule\b.*\broutine\b",
+        r"^add\b.*\broutine\b",
     ]
     for pattern in single_step_patterns:
         if re.match(pattern, lower):
@@ -792,7 +806,7 @@ def find_cached_plan(docs, goal):
 
 def run_minimal_planning_call(goal, actions):
     """Isolated LLM call to generate a numbered plan. Returns list of steps or None."""
-    if _token_count(goal) > 200:
+    if _token_count(goal) > 100:
         return None
     planning_messages = [
         {
@@ -820,6 +834,8 @@ def run_minimal_planning_call(goal, actions):
 
 def run_miniplan_call(goal):
     """Decomposition LLM call: ask for 2-4 subtasks. Returns subtask list or None."""
+    if _token_count(goal) > 200:
+        return None
     planning_messages = [
         {
             "role": "system",
@@ -907,6 +923,11 @@ def run_decomposition_loop(subtasks, original_goal, actions, config, state):
             except Exception:
                 pass
             return complete_result(state, "stopped")
+        if subtask_outcome in ("gate_paused", "need_approval", "need_authentication"):
+            state["_decomp_subtask_idx"] = subtasks.index(subtask)
+            state["_decomp_subtasks"] = subtasks
+            state["_decomp_original_goal"] = original_goal
+            return subtask_result
         if subtask_outcome not in ("completed",):
             try:
                 _do_transition("failed", "subtask failed: " + subtask, config)
@@ -951,6 +972,8 @@ def run_planning_phase(goal, actions, config, state):
     cached = find_cached_plan(docs, goal)
     if cached and cached.get("confidence", 0.0) >= threshold:
         if cached.get("is_decomposition"):
+            if config.get("decomposition_depth", 0) >= 1:
+                return (cached["steps"], "cached", docs)
             return (cached["steps"], "decompose", docs)
         plan_doc_id = __save_plan_doc__(goal, cached["steps"], False)
         if plan_doc_id:
@@ -969,7 +992,7 @@ def run_planning_phase(goal, actions, config, state):
 
     subtasks = run_miniplan_call(goal)
     if subtasks is None:
-        return ([], "failed", docs)
+        return (["Complete the task: " + goal], "llm", docs)
 
     return (subtasks, "decompose", docs)
 
@@ -1182,13 +1205,22 @@ def run_loop(context, goal, actions, state, config):
                 }
                 for i, doc in enumerate(docs)
             ]
+            guard_tool_schemas = [
+                {
+                    "name": a.get("name", ""),
+                    "content": a.get("description", ""),
+                    "score": 1.0,
+                    "type": "tool",
+                }
+                for a in actions
+            ] if actions else []
             guard_result = __apply_token_guard__({
                 "budget": config.get("max_prompt_tokens", 8192),
                 "system_prompt": system_content,
                 "plan_anchor": plan_anchor_text,
                 "skills": guard_skills_input,
                 "memory_docs": guard_docs_input,
-                "tool_schemas": [],
+                "tool_schemas": guard_tool_schemas,
                 "conversation_history": [],
             })
             if not guard_result.get("fits", True):
@@ -1302,9 +1334,14 @@ def run_loop(context, goal, actions, state, config):
                                 to_drop -= 1
                             else:
                                 surviving.append(m)
-                        while surviving and surviving[0].get("role") == "ActionResult":
-                            surviving = surviving[1:]
-                        working_messages[:] = sys_msgs + surviving
+                        cleaned = []
+                        for si, sm in enumerate(surviving):
+                            if sm.get("role") in ("ActionResult", "action_result"):
+                                prev_role = cleaned[-1].get("role", "") if cleaned else ""
+                                if prev_role not in ("Assistant", "assistant", "ActionResult", "action_result"):
+                                    continue
+                            cleaned.append(sm)
+                        working_messages[:] = sys_msgs + cleaned
                         state["working_messages"] = working_messages
 
         # 4. Call LLM

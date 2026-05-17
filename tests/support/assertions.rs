@@ -29,11 +29,20 @@ pub fn assert_response_matches(response: &str, pattern: &str) {
     );
 }
 
+/// Returns true if `recorded` matches `expected` either as an exact match or
+/// as `"expected(…)"` — the format produced by `format_action_display_name`.
+pub fn tool_name_matches(recorded: &str, expected: &str) -> bool {
+    recorded == expected
+        || recorded
+            .strip_prefix(expected)
+            .is_some_and(|rest| rest.starts_with('('))
+}
+
 /// Assert that all `expected` tool names appear in `started`.
 pub fn assert_tools_used(started: &[String], expected: &[&str]) {
     for tool in expected {
         assert!(
-            started.iter().any(|s| s == tool),
+            started.iter().any(|s| tool_name_matches(s, tool)),
             "tools_used: \"{tool}\" not called, got: {started:?}"
         );
     }
@@ -43,7 +52,7 @@ pub fn assert_tools_used(started: &[String], expected: &[&str]) {
 pub fn assert_tools_not_used(started: &[String], forbidden: &[&str]) {
     for tool in forbidden {
         assert!(
-            !started.iter().any(|s| s == tool),
+            !started.iter().any(|s| tool_name_matches(s, tool)),
             "tools_not_used: \"{tool}\" was called, got: {started:?}"
         );
     }
@@ -75,7 +84,7 @@ pub fn assert_all_tools_succeeded(completed: &[(String, bool)]) {
 pub fn assert_tool_succeeded(completed: &[(String, bool)], tool_name: &str) {
     let found = completed
         .iter()
-        .any(|(name, success)| name == tool_name && *success);
+        .any(|(name, success)| tool_name_matches(name, tool_name) && *success);
     assert!(
         found,
         "Expected '{tool_name}' to complete successfully, got: {completed:?}"
@@ -104,7 +113,7 @@ pub fn assert_tool_order(started: &[String], expected: &[&str]) {
     for tool in expected {
         let pos = started[search_from..]
             .iter()
-            .position(|s| s == tool)
+            .position(|s| tool_name_matches(s, tool))
             .map(|p| p + search_from);
         match pos {
             Some(idx) => search_from = idx + 1,
@@ -207,7 +216,9 @@ pub fn verify_expects(
 
     // tool_results_contain
     for (tool_name, substring) in &expects.tool_results_contain {
-        let found = results.iter().find(|(name, _)| name == tool_name);
+        let found = results
+            .iter()
+            .find(|(name, _)| tool_name_matches(name, tool_name));
         assert!(
             found.is_some(),
             "[{label}] tool_results_contain: no result for tool \"{tool_name}\", got: {results:?}"

@@ -770,8 +770,14 @@ mod tests {
             &self,
             _: &[crate::types::message::ThreadMessage],
             _: &[ActionDef],
-            _: &LlmCallConfig,
+            config: &LlmCallConfig,
         ) -> Result<LlmOutput, EngineError> {
+            if config.is_planning_call {
+                return Ok(LlmOutput {
+                    response: LlmResponse::Text(String::new()),
+                    usage: TokenUsage::default(),
+                });
+            }
             let mut r = self.responses.lock().unwrap();
             if r.is_empty() {
                 Ok(LlmOutput {

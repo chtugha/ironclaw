@@ -130,6 +130,11 @@ impl LlmBackend for LlmBridgeAdapter {
                 .with_max_tokens(max_tokens)
                 .with_temperature(temperature);
             request.metadata = config.metadata.clone();
+            if config.is_planning_call {
+                request
+                    .metadata
+                    .insert("is_planning_call".to_string(), "true".to_string());
+            }
             if let Some(ref model) = config.model {
                 request.model = Some(model.clone());
             }

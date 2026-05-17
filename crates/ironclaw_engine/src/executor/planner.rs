@@ -20,16 +20,26 @@ impl PlanAnchor {
         let max_bytes = (Self::MAX_TOKENS as f64 * Self::BYTES_PER_TOKEN) as usize;
         let current_step = self.current_step.min(self.steps.len().saturating_sub(1));
 
+        let max_step_chars = max_bytes / 2;
         let step_lines: Vec<String> = self
             .steps
             .iter()
             .enumerate()
             .map(|(i, step)| {
                 let step_num = i + 1;
-                if i == current_step {
-                    format!("**→ {step_num}. {step}** (current)")
+                let truncated_step = if step.len() > max_step_chars {
+                    let mut end = max_step_chars;
+                    while end > 0 && !step.is_char_boundary(end) {
+                        end -= 1;
+                    }
+                    format!("{}…", &step[..end])
                 } else {
-                    format!("{step_num}. {step}")
+                    step.clone()
+                };
+                if i == current_step {
+                    format!("**→ {step_num}. {truncated_step}** (current)")
+                } else {
+                    format!("{step_num}. {truncated_step}")
                 }
             })
             .collect();

@@ -1242,7 +1242,7 @@ impl Tool for RoutineCreateTool {
     }
 
     fn engine_compatibility(&self) -> EngineCompatibility {
-        EngineCompatibility::V1Only
+        EngineCompatibility::Both
     }
 }
 
@@ -1336,7 +1336,7 @@ impl Tool for RoutineListTool {
     }
 
     fn engine_compatibility(&self) -> EngineCompatibility {
-        EngineCompatibility::V1Only
+        EngineCompatibility::Both
     }
 }
 
@@ -1503,7 +1503,7 @@ impl Tool for RoutineUpdateTool {
     }
 
     fn engine_compatibility(&self) -> EngineCompatibility {
-        EngineCompatibility::V1Only
+        EngineCompatibility::Both
     }
 }
 
@@ -1594,7 +1594,7 @@ impl Tool for RoutineDeleteTool {
     }
 
     fn engine_compatibility(&self) -> EngineCompatibility {
-        EngineCompatibility::V1Only
+        EngineCompatibility::Both
     }
 }
 
@@ -1679,7 +1679,7 @@ impl Tool for RoutineFireTool {
     }
 
     fn engine_compatibility(&self) -> EngineCompatibility {
-        EngineCompatibility::V1Only
+        EngineCompatibility::Both
     }
 }
 
@@ -1822,7 +1822,7 @@ impl Tool for RoutineHistoryTool {
     }
 
     fn engine_compatibility(&self) -> EngineCompatibility {
-        EngineCompatibility::V1Only
+        EngineCompatibility::Both
     }
 }
 
@@ -1891,7 +1891,7 @@ impl Tool for EventEmitTool {
     }
 
     fn engine_compatibility(&self) -> EngineCompatibility {
-        EngineCompatibility::V1Only
+        EngineCompatibility::Both
     }
 }
 
@@ -2704,7 +2704,4 @@ mod tests {
         ));
     }
 
-    // Engine compatibility for routine tools is verified at the registry level
-    // via `tool_definitions_for_engine_excludes_v1_only_from_v2`. Each tool's
-    // `engine_compatibility()` returns `V1Only` — see the impl blocks above.
 }

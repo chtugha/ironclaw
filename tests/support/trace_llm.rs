@@ -683,6 +683,20 @@ impl LlmProvider for TraceLlm {
     }
 
     async fn complete(&self, request: CompletionRequest) -> Result<CompletionResponse, LlmError> {
+        // Planning calls must not consume recorded trace steps — the steps
+        // were recorded for the main execution loop, not for internal planning
+        // LLM calls added by the planning pipeline. Return empty text so the
+        // planning phase falls through to a trivial single-step plan.
+        if request.metadata.get("is_planning_call").map(|v| v.as_str()) == Some("true") {
+            return Ok(CompletionResponse {
+                content: String::new(),
+                input_tokens: 0,
+                output_tokens: 0,
+                finish_reason: FinishReason::Stop,
+                cache_read_input_tokens: 0,
+                cache_creation_input_tokens: 0,
+            });
+        }
         // complete() is called when Reasoning has force_text=true (no tools
         // available). Skip any remaining ToolCalls steps in the trace and
         // return the next Text step, since in real usage the LLM would

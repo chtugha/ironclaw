@@ -1296,6 +1296,30 @@ impl EffectBridgeAdapter {
             });
         }
 
+        if self.multi_tenant {
+            let db = self.tools.database();
+            let policy_state =
+                load_cached_admin_tool_policy(db, &self.admin_policy_cache).await;
+            if is_action_blocked_by_admin_policy(
+                policy_state,
+                canonical_action_name,
+                &context.user_id,
+                db,
+            )
+            .await
+            {
+                return Ok(ActionResult {
+                    call_id: String::new(),
+                    action_name: action_name.to_string(),
+                    output: serde_json::json!({
+                        "error": format!("Tool '{}' is disabled by admin policy.", canonical_action_name)
+                    }),
+                    is_error: true,
+                    duration: start.elapsed(),
+                });
+            }
+        }
+
         if let Some(result) = self
             .handle_mission_call(canonical_action_name, &parameters, context)
             .await
@@ -2913,6 +2937,39 @@ async fn apply_admin_policy_to_inventory(
 
     inventory.inline.retain(|a| !blocked(&a.name));
     inventory.discoverable.retain(|a| !blocked(&a.name));
+}
+
+async fn is_action_blocked_by_admin_policy(
+    policy_state: &AdminToolPolicyState,
+    action_name: &str,
+    user_id: &str,
+    db: Option<&std::sync::Arc<dyn crate::db::Database>>,
+) -> bool {
+    let admin_policy = match policy_state {
+        AdminToolPolicyState::Missing => return false,
+        AdminToolPolicyState::Loaded(p) => p,
+        AdminToolPolicyState::FailClosed => return true,
+    };
+
+    if admin_policy.is_empty() {
+        return false;
+    }
+
+    let is_admin = if let Some(db) = db {
+        match db.get_user(user_id).await {
+            Ok(Some(record)) => UserRole::from_db_role(&record.role).is_admin(),
+            Ok(None) => false,
+            Err(_) => false,
+        }
+    } else {
+        false
+    };
+
+    if is_admin {
+        return false;
+    }
+
+    admin_policy.is_tool_disabled(action_name, user_id)
 }
 
 #[cfg(test)]

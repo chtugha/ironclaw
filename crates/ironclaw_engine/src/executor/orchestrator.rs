@@ -465,9 +465,6 @@ pub async fn execute_orchestrator(
     })) {
         Ok(Ok(runner)) => runner,
         Ok(Err(e)) => {
-            // Route parse failures through the same typed sanitizer so
-            // a bad `default.py` deploy can't leak Monty internals to
-            // the channel edge.
             return Err(EngineError::Orchestrator(classify_orchestrator_failure(
                 "Orchestrator parse error",
                 &e.to_string(),
@@ -4051,7 +4048,7 @@ mod tests {
         // Build a single-skill list as a Python literal — metadata shape
         // matches what handle_list_skills emits at runtime.
         let skill_literal = format!(
-            r#"[{{"doc_id": "test", "title": "ceo-setup", "content": "body", "metadata": {{"name": "ceo-setup", "activation": {{"patterns": [{pattern:?}], "max_context_tokens": 2500, "keywords": [], "tags": []}}}}}}]"#
+            r#"[{{"doc_id": "test", "title": "ceo-setup", "content": "body", "metadata": {{"name": "ceo-setup", "activation": {{"patterns": [{pattern:?}], "max_context_tokens": 256, "keywords": [], "tags": []}}}}}}]"#
         );
         let curly_goal = "I\u{2019}m Illia Polosukhin. I\u{2019}m a CEO of NEAR Foundation";
         let program = format!(

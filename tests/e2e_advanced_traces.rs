@@ -18,6 +18,10 @@ mod advanced {
     use crate::support::test_rig::TestRigBuilder;
     use crate::support::trace_llm::LlmTrace;
 
+    fn tool_is(recorded: &str, expected: &str) -> bool {
+        crate::support::assertions::tool_name_matches(recorded, expected)
+    }
+
     const FIXTURES: &str = concat!(
         env!("CARGO_MANIFEST_DIR"),
         "/tests/fixtures/llm_traces/advanced"
@@ -141,7 +145,7 @@ mod advanced {
 
         // Extra: should have called write_file twice.
         let started = rig.tool_calls_started();
-        let write_count = started.iter().filter(|s| *s == "write_file").count();
+        let write_count = started.iter().filter(|s| tool_is(s, "write_file")).count();
         assert_eq!(
             write_count, 2,
             "expected 2 write_file calls, got {write_count}"
@@ -174,7 +178,7 @@ mod advanced {
 
         // The agent should have attempted write_file twice.
         let started = rig.tool_calls_started();
-        let write_count = started.iter().filter(|s| *s == "write_file").count();
+        let write_count = started.iter().filter(|s| tool_is(s, "write_file")).count();
         assert_eq!(
             write_count, 2,
             "expected 2 write_file calls (bad + good), got {write_count}"
@@ -189,7 +193,7 @@ mod advanced {
         let completed = rig.tool_calls_completed();
         let any_success = completed
             .iter()
-            .any(|(name, success)| name == "write_file" && *success);
+            .any(|(name, success)| tool_is(name, "write_file") && *success);
         assert!(any_success, "no successful write_file, got: {completed:?}");
 
         rig.shutdown();
@@ -286,7 +290,7 @@ mod advanced {
 
         // Extra: verify memory_write count.
         let started = rig.tool_calls_started();
-        let write_count = started.iter().filter(|s| *s == "memory_write").count();
+        let write_count = started.iter().filter(|s| tool_is(s, "memory_write")).count();
         assert_eq!(
             write_count, 3,
             "expected 3 memory_write calls, got {write_count}"
@@ -730,18 +734,18 @@ mod advanced {
         // 9. Verify tool calls across both turns.
         let started = rig.tool_calls_started();
         assert!(
-            started.iter().any(|s| s == "tool_search"),
+            started.iter().any(|s| tool_is(s, "tool_search")),
             "tool_search not called: {started:?}"
         );
         assert!(
-            started.iter().any(|s| s == "tool_install"),
+            started.iter().any(|s| tool_is(s, "tool_install")),
             "tool_install not called: {started:?}"
         );
 
         // Verify MCP tools were called in turn 2.
         assert!(
-            started.iter().any(|s| s == "mock_notion_notion-search")
-                && started.iter().any(|s| s == "mock_notion_notion-fetch"),
+            started.iter().any(|s| tool_is(s, "mock_notion_notion-search"))
+                && started.iter().any(|s| tool_is(s, "mock_notion_notion-fetch")),
             "No mock-notion MCP tools called: {started:?}"
         );
 
@@ -783,7 +787,7 @@ mod advanced {
         // Verify the echo tool was used in turn 1.
         let started = rig.tool_calls_started();
         assert!(
-            started.iter().any(|s| s == "echo"),
+            started.iter().any(|s| tool_is(s, "echo")),
             "Turn 1: echo tool not called: {started:?}",
         );
 
@@ -849,13 +853,13 @@ mod advanced {
 
         // Verify tool usage across all turns.
         let all_started = rig.tool_calls_started();
-        let echo_count = all_started.iter().filter(|s| *s == "echo").count();
+        let echo_count = all_started.iter().filter(|s| tool_is(s, "echo")).count();
         assert_eq!(
             echo_count, 2,
             "Expected 2 echo calls (turn 1 + turn 2), got {echo_count}",
         );
         assert!(
-            all_started.iter().any(|s| s == "time"),
+            all_started.iter().any(|s| tool_is(s, "time")),
             "time tool should have been called in turn 2: {all_started:?}",
         );
 
@@ -947,7 +951,7 @@ mod advanced {
         let completed = rig.tool_calls_completed();
         let memory_writes: Vec<_> = completed
             .iter()
-            .filter(|(name, _)| name == "memory_write")
+            .filter(|(name, _)| tool_is(name, "memory_write"))
             .collect();
         assert!(
             memory_writes.len() >= 4,

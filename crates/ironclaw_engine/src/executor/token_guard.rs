@@ -153,7 +153,6 @@ fn total_tokens(parts: &PromptParts) -> usize {
 /// Returns a [`DroppedItems`] summary and modifies `parts` in place.
 /// The caller should check `fits` (total ≤ budget after full degradation).
 pub fn apply(budget: &PromptBudget, parts: &mut PromptParts, thread_id: &str) -> (DroppedItems, bool) {
-    // Defensive: validate that plan_anchor is present in system prompt.
     if !parts.plan_anchor_text.is_empty()
         && !parts.system_prompt.contains(&parts.plan_anchor_text)
     {
@@ -164,77 +163,76 @@ pub fn apply(budget: &PromptBudget, parts: &mut PromptParts, thread_id: &str) ->
     }
 
     let mut dropped = DroppedItems::default();
+    let mut current = total_tokens(parts);
 
-    // Fast path — nothing to drop.
-    if total_tokens(parts) <= budget.total {
+    if current <= budget.total {
         return (dropped, true);
     }
 
-    // Step 1: Drop lowest-scoring memory docs (exclude DocType::Plan).
-    // Sort ascending by score so lowest come first (to be dropped).
     parts.memory_docs.sort_by(|a, b| {
         a.score
             .partial_cmp(&b.score)
             .unwrap_or(std::cmp::Ordering::Equal)
     });
     let mut i = 0;
-    while i < parts.memory_docs.len() && total_tokens(parts) > budget.total {
+    while i < parts.memory_docs.len() && current > budget.total {
         let doc_type_lower = parts.memory_docs[i].doc_type.to_lowercase();
         if doc_type_lower == "plan" {
             i += 1;
             continue;
         }
+        let removed_tokens = token_count(&parts.memory_docs[i].content);
         parts.memory_docs.remove(i);
+        current = current.saturating_sub(removed_tokens);
         dropped.memory_docs += 1;
-        // Don't increment i — re-check same index after removal.
     }
 
-    if total_tokens(parts) <= budget.total {
+    if current <= budget.total {
         return (dropped, true);
     }
 
-    // Step 2: Drop lowest-scoring skills.
     parts.skills.sort_by(|a, b| {
         a.score
             .partial_cmp(&b.score)
             .unwrap_or(std::cmp::Ordering::Equal)
     });
-    while !parts.skills.is_empty() && total_tokens(parts) > budget.total {
+    while !parts.skills.is_empty() && current > budget.total {
+        let removed_tokens = token_count(&parts.skills[0].content);
         parts.skills.remove(0);
+        current = current.saturating_sub(removed_tokens);
         dropped.skills += 1;
     }
 
-    if total_tokens(parts) <= budget.total {
+    if current <= budget.total {
         return (dropped, true);
     }
 
-    // Step 3: Truncate tool schema descriptions to 60 words.
     for schema in &mut parts.tool_schemas {
         let truncated = truncate_to_60_words(&schema.content);
         if truncated.len() < schema.content.len() {
-            dropped.tool_descriptions_truncated += 1;
+            let saved = token_count(&schema.content) - token_count(&truncated);
             schema.content = truncated;
+            current = current.saturating_sub(saved);
+            dropped.tool_descriptions_truncated += 1;
         }
     }
 
-    if total_tokens(parts) <= budget.total {
+    if current <= budget.total {
         return (dropped, true);
     }
 
-    // Step 4: Remove droppable sections from system prompt.
     let new_prompt = remove_droppable_sections(&parts.system_prompt);
     if new_prompt.len() < parts.system_prompt.len() {
+        let saved = token_count(&parts.system_prompt) - token_count(&new_prompt);
         parts.system_prompt = new_prompt;
+        current = current.saturating_sub(saved);
     }
 
-    if total_tokens(parts) <= budget.total {
+    if current <= budget.total {
         return (dropped, true);
     }
 
-    // Step 5: Drop oldest history messages (never the latest user message).
-    // Recompute the last-user index on every iteration because removals shift
-    // indices; a stale index would incorrectly protect or skip the wrong entry.
-    while !parts.history.is_empty() && total_tokens(parts) > budget.total {
+    while !parts.history.is_empty() && current > budget.total {
         let last_user_idx = parts
             .history
             .iter()
@@ -242,14 +240,16 @@ pub fn apply(budget: &PromptBudget, parts: &mut PromptParts, thread_id: &str) ->
         let drop_idx = (0..parts.history.len()).find(|&idx| Some(idx) != last_user_idx);
         match drop_idx {
             Some(idx) => {
+                let removed_tokens = token_count(&parts.history[idx].content);
                 parts.history.remove(idx);
+                current = current.saturating_sub(removed_tokens);
                 dropped.history_messages += 1;
             }
             None => break,
         }
     }
 
-    let fits = total_tokens(parts) <= budget.total;
+    let fits = current <= budget.total;
     (dropped, fits)
 }
 
