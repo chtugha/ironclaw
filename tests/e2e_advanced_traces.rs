@@ -87,27 +87,33 @@ mod advanced {
         }
     }
 
-    /// Serializes routine engine tests that share the global ENGINE_STATE singleton.
+    /// Serializes all integration tests that share the global ENGINE_STATE singleton.
     ///
     /// The engine v2 state is process-global (one per binary for production use).
-    /// Tests that create agents with V1 RoutineEngine must not run concurrently,
-    /// or the global EffectBridgeAdapter may dispatch to the wrong agent's database.
-    /// This mutex ensures only one such test runs at a time.
+    /// `init_engine()` installs the current agent's tool registry into the shared
+    /// `EffectBridgeAdapter`. When tests run concurrently, each agent's
+    /// `init_engine()` call overwrites the shared tools, causing other in-flight
+    /// tests to dispatch tool calls against the wrong agent's database.
+    ///
+    /// Serializing ALL integration tests via this mutex prevents that interference:
+    /// only one test's tools are ever active in ENGINE_STATE at a time.
     ///
     /// Safe to hold across `await` inside `#[tokio::test]` because the default
     /// `current_thread` flavor never migrates tasks between OS threads, so
     /// `std::sync::MutexGuard` (which is `!Send`) is never transferred.
-    fn routine_engine_test_mutex() -> std::sync::MutexGuard<'static, ()> {
+    fn engine_test_mutex() -> std::sync::MutexGuard<'static, ()> {
         static MUTEX: OnceLock<Mutex<()>> = OnceLock::new();
-        MUTEX.get_or_init(|| Mutex::new(())).lock().expect("routine engine test mutex poisoned")
+        MUTEX.get_or_init(|| Mutex::new(())).lock().expect("engine test mutex poisoned")
     }
 
     // -----------------------------------------------------------------------
     // 1. Multi-turn memory coherence
     // -----------------------------------------------------------------------
 
+    #[allow(clippy::await_holding_lock)]
     #[tokio::test]
     async fn multi_turn_memory_coherence() {
+        let _guard = engine_test_mutex();
         let trace = LlmTrace::from_file(format!("{FIXTURES}/multi_turn_memory.json")).unwrap();
         let rig = TestRigBuilder::new()
             .with_trace(trace.clone())
@@ -133,8 +139,10 @@ mod advanced {
     // 1b. User steering (multi-turn correction)
     // -----------------------------------------------------------------------
 
+    #[allow(clippy::await_holding_lock)]
     #[tokio::test]
     async fn user_steering() {
+        let _guard = engine_test_mutex();
         let _cleanup = CleanupGuard::new().file("/tmp/ironclaw_steer_test.txt");
         let _ = std::fs::remove_file("/tmp/ironclaw_steer_test.txt");
 
@@ -173,8 +181,10 @@ mod advanced {
     // 2. Tool error recovery
     // -----------------------------------------------------------------------
 
+    #[allow(clippy::await_holding_lock)]
     #[tokio::test]
     async fn tool_error_recovery() {
+        let _guard = engine_test_mutex();
         let _cleanup = CleanupGuard::new().file("/tmp/ironclaw_recovery_test.txt");
         let _ = std::fs::remove_file("/tmp/ironclaw_recovery_test.txt");
 
@@ -218,8 +228,10 @@ mod advanced {
     // 3. Long tool chain (6 steps)
     // -----------------------------------------------------------------------
 
+    #[allow(clippy::await_holding_lock)]
     #[tokio::test]
     async fn long_tool_chain() {
+        let _guard = engine_test_mutex();
         let test_dir = "/tmp/ironclaw_chain_test";
         let _cleanup = CleanupGuard::new().dir(test_dir);
         let _ = std::fs::remove_dir_all(test_dir);
@@ -283,8 +295,10 @@ mod advanced {
     // 4. Workspace semantic search
     // -----------------------------------------------------------------------
 
+    #[allow(clippy::await_holding_lock)]
     #[tokio::test]
     async fn workspace_semantic_search() {
+        let _guard = engine_test_mutex();
         let trace = LlmTrace::from_file(format!("{FIXTURES}/workspace_search.json")).unwrap();
         let rig = TestRigBuilder::new()
             .with_trace(trace.clone())
@@ -318,8 +332,10 @@ mod advanced {
     // 5. Iteration limit guard
     // -----------------------------------------------------------------------
 
+    #[allow(clippy::await_holding_lock)]
     #[tokio::test]
     async fn iteration_limit_stops_runaway() {
+        let _guard = engine_test_mutex();
         let trace = LlmTrace::from_file(format!("{FIXTURES}/iteration_limit.json")).unwrap();
         let rig = TestRigBuilder::new()
             .with_trace(trace)
@@ -355,8 +371,10 @@ mod advanced {
     //   http + memory_write + message (broadcast to test channel)
     // -----------------------------------------------------------------------
 
+    #[allow(clippy::await_holding_lock)]
     #[tokio::test]
     async fn routine_news_digest() {
+        let _guard = engine_test_mutex();
         use ironclaw::llm::recording::{HttpExchange, HttpExchangeRequest, HttpExchangeResponse};
 
         let trace = LlmTrace::from_file(format!("{FIXTURES}/routine_news_digest.json")).unwrap();
@@ -470,7 +488,7 @@ mod advanced {
     #[allow(clippy::await_holding_lock)]
     #[tokio::test]
     async fn routine_event_trigger_telegram_channel_fires() {
-        let _guard = routine_engine_test_mutex();
+        let _guard = engine_test_mutex();
         let trace = LlmTrace::from_file(format!("{FIXTURES}/routine_event_telegram.json")).unwrap();
         let rig = TestRigBuilder::new()
             .with_trace(trace.clone())
@@ -548,7 +566,7 @@ mod advanced {
     #[allow(clippy::await_holding_lock)]
     #[tokio::test]
     async fn routine_event_trigger_without_channel_filter_still_fires() {
-        let _guard = routine_engine_test_mutex();
+        let _guard = engine_test_mutex();
         let trace =
             LlmTrace::from_file(format!("{FIXTURES}/routine_event_any_channel.json")).unwrap();
         let rig = TestRigBuilder::new()
@@ -615,8 +633,10 @@ mod advanced {
     // 7. Prompt injection resilience
     // -----------------------------------------------------------------------
 
+    #[allow(clippy::await_holding_lock)]
     #[tokio::test]
     async fn prompt_injection_resilience() {
+        let _guard = engine_test_mutex();
         let trace =
             LlmTrace::from_file(format!("{FIXTURES}/prompt_injection_resilience.json")).unwrap();
         let rig = TestRigBuilder::new()
@@ -644,8 +664,10 @@ mod advanced {
     //   Turn 2: mock-notion_notion-search → mock-notion_notion-fetch → text
     // -----------------------------------------------------------------------
 
+    #[allow(clippy::await_holding_lock)]
     #[tokio::test]
     async fn mcp_extension_lifecycle() {
+        let _guard = engine_test_mutex();
         use crate::support::mock_mcp_server::{MockToolResponse, start_mock_mcp_server};
         use ironclaw::extensions::{AuthHint, ExtensionKind, ExtensionSource, RegistryEntry};
         const TEST_USER_ID: &str = "test-user";
@@ -784,8 +806,10 @@ mod advanced {
     // auto-processed by the drain loop after the current turn completes.
     // -----------------------------------------------------------------------
 
+    #[allow(clippy::await_holding_lock)]
     #[tokio::test]
     async fn message_queue_drains_after_tool_turn() {
+        let _guard = engine_test_mutex();
         let trace =
             LlmTrace::from_file(format!("{FIXTURES}/message_queue_during_tools.json")).unwrap();
         let rig = TestRigBuilder::new()
@@ -891,8 +915,10 @@ mod advanced {
 
     /// Verifies that creating the assistant conversation does not inject a
     /// synthetic greeting turn into history.
+    #[allow(clippy::await_holding_lock)]
     #[tokio::test]
     async fn assistant_thread_starts_empty() {
+        let _guard = engine_test_mutex();
         let rig = TestRigBuilder::new().with_bootstrap().build().await;
 
         // Simulate the gateway bootstrap path: create the assistant thread.
@@ -923,8 +949,10 @@ mod advanced {
     /// Exercises the full onboarding flow: the assistant thread starts empty,
     /// user converses for 3 turns, agent writes profile + memory + identity,
     /// clears BOOTSTRAP.md, and the workspace reflects all writes.
+    #[allow(clippy::await_holding_lock)]
     #[tokio::test]
     async fn bootstrap_onboarding_clears_bootstrap() {
+        let _guard = engine_test_mutex();
         use std::sync::Arc;
 
         use ironclaw::workspace::Workspace;

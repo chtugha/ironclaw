@@ -508,16 +508,14 @@ mod tests {
         use std::sync::Arc;
 
         /// Helper to create a test database with migrations.
-        ///
-        /// Uses an in-memory database to avoid file-locking SQLITE_MISUSE errors
-        /// that occur when many tests run concurrently with file-backed databases.
         async fn create_test_db() -> (Arc<dyn crate::db::Database>, tempfile::TempDir) {
             use crate::db::libsql::LibSqlBackend;
 
             let temp_dir = tempfile::tempdir().expect("tempdir");
-            let backend = LibSqlBackend::new_memory()
+            let db_path = temp_dir.path().join("hygiene_test.db");
+            let backend = LibSqlBackend::new_local(&db_path)
                 .await
-                .expect("LibSqlBackend::new_memory");
+                .expect("LibSqlBackend::new_local");
             backend.run_migrations().await.expect("run_migrations");
             let db: Arc<dyn Database> = Arc::new(backend);
             (db, temp_dir)

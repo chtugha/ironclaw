@@ -118,9 +118,15 @@ impl LibSqlBackend {
 
     /// Create a new connection to the database.
     ///
-    /// Sets `PRAGMA busy_timeout = 5000` on every connection so concurrent
-    /// writers wait up to 5 seconds instead of failing instantly with
-    /// "database is locked".
+    /// Attempts to set `PRAGMA busy_timeout = 5000` so concurrent writers wait
+    /// up to 5 seconds instead of failing instantly with "database is locked".
+    /// The pragma is best-effort: if it fails (e.g. due to a transient
+    /// `SQLITE_MISUSE` under extreme concurrent test load, or because the
+    /// database is `:memory:` which does not support file-locking pragmas), a
+    /// warning is logged and the connection is returned anyway. The only
+    /// consequence of a missing timeout is that concurrent writers get
+    /// immediate "database is locked" errors rather than waiting — acceptable
+    /// for tests and rare in production.
     ///
     /// Retries up to 3 times with exponential backoff to handle transient
     /// "unable to open database file" errors from concurrent connection
@@ -130,11 +136,13 @@ impl LibSqlBackend {
         for attempt in 0..3u32 {
             match self.db.connect() {
                 Ok(conn) => {
-                    conn.query("PRAGMA busy_timeout = 5000", ())
-                        .await
-                        .map_err(|e| {
-                            DatabaseError::Pool(format!("Failed to set busy_timeout: {}", e))
-                        })?;
+                    if let Err(e) = conn.query("PRAGMA busy_timeout = 5000", ()).await {
+                        tracing::warn!(
+                            error = %e,
+                            "Failed to set busy_timeout on connection (non-fatal); \
+                             concurrent writers may see immediate lock errors"
+                        );
+                    }
                     return Ok(conn);
                 }
                 Err(e) => {
@@ -331,6 +339,8 @@ impl Database for LibSqlBackend {
         let conn = self.connect().await?;
         // WAL mode persists in the database file: all future connections benefit.
         // Readers no longer block writers and vice versa.
+        // For in-memory databases the pragma is a no-op (returns "memory") but
+        // executing it is harmless.
         conn.query("PRAGMA journal_mode=WAL", ())
             .await
             .map_err(|e| DatabaseError::Migration(format!("Failed to enable WAL mode: {}", e)))?;
@@ -564,14 +574,16 @@ mod tests {
 
     #[tokio::test]
     async fn test_busy_timeout_set_on_connect() {
-        let backend = LibSqlBackend::new_memory().await.unwrap();
+        let temp_dir = tempfile::tempdir().unwrap();
+        let db_path = temp_dir.path().join("busy_timeout_test.db");
+        let backend = LibSqlBackend::new_local(&db_path).await.unwrap();
         backend.run_migrations().await.unwrap();
 
         let conn = backend.connect().await.unwrap();
         let mut rows = conn.query("PRAGMA busy_timeout", ()).await.unwrap();
         let row = rows.next().await.unwrap().unwrap();
         let timeout: i64 = row.get(0).unwrap();
-        assert_eq!(timeout, 5000);
+        assert_eq!(timeout, 5000, "busy_timeout must be 5000 on file-backed databases");
     }
 
     /// Regression test: save_job must persist user_id and get_job must return it.

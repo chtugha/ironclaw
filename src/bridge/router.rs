@@ -724,7 +724,7 @@ async fn insert_and_notify_pending_gate(
     notify_pending_gate(
         agent,
         state.sse.clone(),
-        &*state.effect_adapter.tools(),
+        &state.effect_adapter.tools(),
         state.auth_manager.as_deref(),
         state.extension_manager.as_deref(),
         message,
@@ -2781,7 +2781,7 @@ pub async fn resolve_gate(
                 let submit_target = resolve_extension_for_action(
                     state.auth_manager.as_deref(),
                     state.extension_manager.as_deref(),
-                    &*state.effect_adapter.tools(),
+                    &state.effect_adapter.tools(),
                     &pending.action_name,
                     &pending.parameters,
                     credential_name.as_str(),
@@ -4406,7 +4406,7 @@ async fn await_thread_outcome(
                 let extension_name = resolve_auth_gate_extension_name(
                     state.auth_manager.as_deref(),
                     state.extension_manager.as_deref(),
-                    &*state.effect_adapter.tools(),
+                    &state.effect_adapter.tools(),
                     &pending,
                 )
                 .await;

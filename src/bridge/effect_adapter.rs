@@ -1698,7 +1698,7 @@ impl EffectBridgeAdapter {
             intercepted
         } else {
             crate::tools::execute::execute_tool_with_safety(
-                &*tools,
+                &tools,
                 &self.safety,
                 &lookup_name,
                 parameters.clone(),
