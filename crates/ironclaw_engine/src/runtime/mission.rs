@@ -2130,14 +2130,14 @@ impl MissionManager {
     ///    `ThreadManager::has_active_threads`).
     /// 2. At least `threshold_secs` have elapsed since `last_activity_at`.
     async fn is_system_idle(&self, threshold_secs: u64) -> bool {
+        if self.thread_manager.has_active_threads().await {
+            return false;
+        }
         let last = *self.last_activity_at.read().await;
         let elapsed = chrono::Utc::now()
             .signed_duration_since(last)
             .num_seconds();
-        if elapsed < threshold_secs as i64 {
-            return false;
-        }
-        !self.thread_manager.has_active_threads().await
+        elapsed >= threshold_secs as i64
     }
 
     fn spawn_mission_outcome_watcher(

@@ -700,6 +700,26 @@ pub async fn settings_import_handler(
 
     let store = resolve_settings_store(&state).map_err(no_body)?;
 
+    if let Some(v) = body.settings.get("llm_custom_providers") {
+        guard_active_provider_not_removed(store, &user.user_id, v)
+            .await
+            .map_err(no_body)?;
+        validate_custom_providers(v).map_err(no_body)?;
+    }
+
+    if let Some(v) = body.settings.get("agent.plan_confidence_threshold") {
+        validate_plan_confidence_threshold(v)
+            .map_err(|msg| (StatusCode::BAD_REQUEST, msg))?;
+    }
+
+    for key in ["agent.max_prompt_tokens", "skills.max_context_tokens"] {
+        if let Some(v) = body.settings.get(key) {
+            validate_prompt_token_budget(store, &user.user_id, key, v)
+                .await
+                .map_err(|msg| (StatusCode::UNPROCESSABLE_ENTITY, msg))?;
+        }
+    }
+
     // Vault any API keys present in the imported settings, same as the
     // individual SET handler does, so plaintext keys never reach the DB.
     let mut sanitized = body.settings.clone();

@@ -759,9 +759,10 @@ def is_trivial(goal, config):
         r"^schedule\b.*\broutine\b",
         r"^add\b.*\broutine\b",
     ]
-    for pattern in single_step_patterns:
-        if re.match(pattern, lower):
-            return True
+    if " and " not in lower and " then " not in lower:
+        for pattern in single_step_patterns:
+            if re.match(pattern, lower):
+                return True
     return False
 
 
@@ -897,7 +898,7 @@ def run_decomposition_loop(subtasks, original_goal, actions, config, state):
     if decomp_plan_doc_id:
         state["active_plan_doc_id"] = decomp_plan_doc_id
 
-    for subtask in subtasks:
+    for subtask_idx, subtask in enumerate(subtasks):
         subtask_state = {}
         last_resp = state.get("_last_response", "")
         if last_resp:
@@ -924,7 +925,7 @@ def run_decomposition_loop(subtasks, original_goal, actions, config, state):
                 pass
             return complete_result(state, "stopped")
         if subtask_outcome in ("gate_paused", "need_approval", "need_authentication"):
-            state["_decomp_subtask_idx"] = subtasks.index(subtask)
+            state["_decomp_subtask_idx"] = subtask_idx
             state["_decomp_subtasks"] = subtasks
             state["_decomp_original_goal"] = original_goal
             return subtask_result
@@ -1091,14 +1092,17 @@ def run_loop(context, goal, actions, state, config):
         for msg in context
     ) if context else False
 
-    if state.get("plan_steps"):
-        # Resuming from a checkpoint (gate pause, approval, authentication
-        # suspend): reuse the previously generated plan.  Re-running
-        # run_planning_phase would (a) waste a planning LLM call that counts
-        # against the local model's token budget, (b) create a duplicate plan
-        # doc and overwrite state["active_plan_doc_id"], orphaning the
-        # original doc so __record_skill_usage__ is never called for it and
-        # plan confidence tracking silently breaks.
+    if state.get("_decomp_subtasks"):
+        remaining_idx = state.pop("_decomp_subtask_idx", 0)
+        remaining_subtasks = state.pop("_decomp_subtasks", [])
+        original_goal_decomp = state.pop("_decomp_original_goal", goal)
+        remaining = remaining_subtasks[remaining_idx:]
+        if remaining:
+            return run_decomposition_loop(remaining, original_goal_decomp, actions, config, state)
+        _do_transition("completed", "decomposition completed on resume", config)
+        _write_last_response(state, working_messages)
+        return complete_result(state, "completed")
+    elif state.get("plan_steps"):
         plan_steps = state["plan_steps"]
         plan_docs = None
     elif has_pending_action_result:
@@ -1122,6 +1126,7 @@ def run_loop(context, goal, actions, state, config):
         state["plan_steps"] = plan_steps
         state.setdefault("plan_current_step", 0)
 
+    cached_tool_schemas = []
     for step in range(step_count, max_iterations):
         # 1. Check signals
         signal = __check_signals__()
@@ -1147,6 +1152,7 @@ def run_loop(context, goal, actions, state, config):
                 else:
                     state["plan_steps"] = new_steps
                     state["plan_current_step"] = 0
+                goal = injected_text
             append_message(working_messages, "User", injected_text)
             # Enable obligation if follow-up message signals execution intent.
             # This covers the inject-into-running-thread path where the thread
@@ -1214,6 +1220,7 @@ def run_loop(context, goal, actions, state, config):
                 }
                 for a in actions
             ] if actions else []
+            cached_tool_schemas = guard_tool_schemas
             guard_result = __apply_token_guard__({
                 "budget": config.get("max_prompt_tokens", 8192),
                 "system_prompt": system_content,
@@ -1240,6 +1247,10 @@ def run_loop(context, goal, actions, state, config):
             survivors = guard_result.get("survivors", {})
             survivor_skill_names = set(survivors.get("skills", []))
             survivor_doc_names = set(survivors.get("memory_docs", []))
+            if not survivor_skill_names and active_skills:
+                __emit_event__("token_budget_warning", reason="all skills dropped to fit token budget")
+            if not survivor_doc_names and docs:
+                __emit_event__("token_budget_warning", reason="all memory docs dropped to fit token budget")
             active_skills = [s for s in active_skills if s.get("metadata", {}).get("name", "") in survivor_skill_names]
             docs = [d for d in docs if d.get("doc_id", d.get("title", "")) in survivor_doc_names]
 
@@ -1286,7 +1297,10 @@ def run_loop(context, goal, actions, state, config):
                 )
 
         # 3.5 Compact context before the next model call when needed.
-        compact_if_needed(state, config)
+        try:
+            compact_if_needed(state, config)
+        except Exception:
+            pass
         working_messages = ensure_working_messages(state, context)
 
         # Apply token guard for steps > 0: trim history if needed.
@@ -1307,7 +1321,7 @@ def run_loop(context, goal, actions, state, config):
                 "plan_anchor": state.get("plan_anchor_text", ""),
                 "skills": [],
                 "memory_docs": [],
-                "tool_schemas": [],
+                "tool_schemas": cached_tool_schemas,
                 "conversation_history": conv_hist_gt0,
             })
             if not guard_result_gt0.get("fits", True):
@@ -1330,7 +1344,7 @@ def run_loop(context, goal, actions, state, config):
                         surviving = []
                         to_drop = n_dropped
                         for mi, m in enumerate(non_sys_msgs):
-                            if to_drop > 0 and mi != last_user_idx:
+                            if to_drop > 0 and mi != last_user_idx and mi < last_user_idx:
                                 to_drop -= 1
                             else:
                                 surviving.append(m)
@@ -1383,7 +1397,7 @@ def run_loop(context, goal, actions, state, config):
             # correctly reflects whether the tool-intent nudge fired this turn.
             # If tool-intent nudge fired and exhausted its budget, consecutive_nudges > 0
             # and the obligation is skipped. The reset happens after.
-            available_actions = __get_actions__()
+            available_actions = __get_actions__() or []
             if (obligation_enabled
                     and consecutive_nudges == 0
                     and len(available_actions) > 0
@@ -1488,7 +1502,7 @@ def run_loop(context, goal, actions, state, config):
             # Track consecutive errors
             if result.get("had_error"):
                 consecutive_errors += 1
-                if max_consecutive_errors is not None and consecutive_errors >= max_consecutive_errors:
+                if consecutive_errors >= max_consecutive_errors:
                     _do_transition("failed", "too many consecutive errors", config)
                     _write_last_response(state, working_messages)
                     return complete_result(
@@ -1710,7 +1724,7 @@ def run_loop(context, goal, actions, state, config):
             elif batch_error_count > 0:
                 consecutive_action_errors += 1
 
-            if max_consecutive_errors is not None and consecutive_action_errors > 0 and consecutive_action_errors >= max_consecutive_errors + 2:
+            if consecutive_action_errors > 0 and consecutive_action_errors >= max_consecutive_errors + 2:
                 _do_transition("failed", "too many consecutive action errors", config)
                 _write_last_response(state, working_messages)
                 return complete_result(
@@ -1718,7 +1732,7 @@ def run_loop(context, goal, actions, state, config):
                     "failed",
                     error=str(consecutive_action_errors) + " consecutive action errors — all recent tool calls failed",
                 )
-            elif max_consecutive_errors is not None and consecutive_action_errors > 0 and consecutive_action_errors >= max_consecutive_errors:
+            elif consecutive_action_errors > 0 and consecutive_action_errors >= max_consecutive_errors:
                 append_message(
                     working_messages,
                     "User",

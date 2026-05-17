@@ -2812,11 +2812,11 @@ fn handle_apply_token_guard(
 
     let dropped_list: Vec<serde_json::Value> = {
         let mut list = Vec::new();
-        for i in 0..dropped.memory_docs {
-            list.push(serde_json::json!({"kind": "memory_doc", "index": i}));
+        if dropped.memory_docs > 0 {
+            list.push(serde_json::json!({"kind": "memory_doc", "count": dropped.memory_docs}));
         }
-        for i in 0..dropped.skills {
-            list.push(serde_json::json!({"kind": "skill", "index": i}));
+        if dropped.skills > 0 {
+            list.push(serde_json::json!({"kind": "skill", "count": dropped.skills}));
         }
         if dropped.tool_descriptions_truncated > 0 {
             list.push(serde_json::json!({
@@ -2824,8 +2824,8 @@ fn handle_apply_token_guard(
                 "count": dropped.tool_descriptions_truncated,
             }));
         }
-        for i in 0..dropped.history_messages {
-            list.push(serde_json::json!({"kind": "history_message", "index": i}));
+        if dropped.history_messages > 0 {
+            list.push(serde_json::json!({"kind": "history_message", "count": dropped.history_messages}));
         }
         list
     };

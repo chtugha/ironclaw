@@ -7,8 +7,46 @@ const BLOCK_MSG: &str =
 
 #[inline]
 fn is_file_url(s: &str) -> bool {
-    s.len() >= FILE_URL_PREFIX.len()
+    if s.len() >= FILE_URL_PREFIX.len()
         && s.as_bytes()[..FILE_URL_PREFIX.len()].eq_ignore_ascii_case(FILE_URL_PREFIX.as_bytes())
+    {
+        return true;
+    }
+    let decoded = percent_decode(s);
+    decoded.len() >= FILE_URL_PREFIX.len()
+        && decoded.as_bytes()[..FILE_URL_PREFIX.len()]
+            .eq_ignore_ascii_case(FILE_URL_PREFIX.as_bytes())
+}
+
+fn percent_decode(s: &str) -> String {
+    let bytes = s.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'%' && i + 2 < bytes.len() {
+            if let (Some(hi), Some(lo)) = (
+                hex_val(bytes[i + 1]),
+                hex_val(bytes[i + 2]),
+            ) {
+                out.push(hi << 4 | lo);
+                i += 3;
+                continue;
+            }
+        }
+        out.push(bytes[i]);
+        i += 1;
+    }
+    String::from_utf8_lossy(&out).into_owned()
+}
+
+#[inline]
+fn hex_val(b: u8) -> Option<u8> {
+    match b {
+        b'0'..=b'9' => Some(b - b'0'),
+        b'a'..=b'f' => Some(b - b'a' + 10),
+        b'A'..=b'F' => Some(b - b'A' + 10),
+        _ => None,
+    }
 }
 
 /// Recursively walk a JSON value and return the first `file://` string found.
@@ -122,6 +160,18 @@ mod tests {
         assert!(reject_if_file_url(&params).is_err());
 
         let params = json!({"url": "fIlE:///tmp/secret"});
+        assert!(reject_if_file_url(&params).is_err());
+    }
+
+    #[test]
+    fn percent_encoded_file_url_is_rejected() {
+        let params = json!({"url": "file%3A///etc/passwd"});
+        assert!(reject_if_file_url(&params).is_err());
+
+        let params = json!({"url": "file%3a%2F%2F/etc/passwd"});
+        assert!(reject_if_file_url(&params).is_err());
+
+        let params = json!({"url": "FILE%3A%2F%2Fetc/passwd"});
         assert!(reject_if_file_url(&params).is_err());
     }
 

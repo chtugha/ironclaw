@@ -196,11 +196,18 @@ pub fn apply(budget: &PromptBudget, parts: &mut PromptParts, thread_id: &str) ->
             .partial_cmp(&b.score)
             .unwrap_or(std::cmp::Ordering::Equal)
     });
-    while !parts.skills.is_empty() && current > budget.total {
-        let removed_tokens = token_count(&parts.skills[0].content);
-        parts.skills.remove(0);
+    let mut skill_drop_count = 0;
+    for skill in &parts.skills {
+        if current <= budget.total {
+            break;
+        }
+        let removed_tokens = token_count(&skill.content);
         current = current.saturating_sub(removed_tokens);
-        dropped.skills += 1;
+        skill_drop_count += 1;
+    }
+    if skill_drop_count > 0 {
+        parts.skills.drain(..skill_drop_count);
+        dropped.skills += skill_drop_count;
     }
 
     if current <= budget.total {
@@ -210,10 +217,15 @@ pub fn apply(budget: &PromptBudget, parts: &mut PromptParts, thread_id: &str) ->
     for schema in &mut parts.tool_schemas {
         let truncated = truncate_to_60_words(&schema.content);
         if truncated.len() < schema.content.len() {
-            let saved = token_count(&schema.content) - token_count(&truncated);
+            let old_bytes = schema.content.len();
             schema.content = truncated;
-            current = current.saturating_sub(saved);
+            let new_bytes = schema.content.len();
+            let saved_tokens = ((old_bytes - new_bytes) as f64 * 0.25) as usize;
+            current = current.saturating_sub(saved_tokens);
             dropped.tool_descriptions_truncated += 1;
+            if current <= budget.total {
+                return (dropped, true);
+            }
         }
     }
 
@@ -223,9 +235,9 @@ pub fn apply(budget: &PromptBudget, parts: &mut PromptParts, thread_id: &str) ->
 
     let new_prompt = remove_droppable_sections(&parts.system_prompt);
     if new_prompt.len() < parts.system_prompt.len() {
-        let saved = token_count(&parts.system_prompt) - token_count(&new_prompt);
+        let saved_tokens = ((parts.system_prompt.len() - new_prompt.len()) as f64 * 0.25) as usize;
         parts.system_prompt = new_prompt;
-        current = current.saturating_sub(saved);
+        current = current.saturating_sub(saved_tokens);
     }
 
     if current <= budget.total {
