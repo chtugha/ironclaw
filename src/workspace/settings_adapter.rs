@@ -442,9 +442,7 @@ mod tests {
     #[tokio::test]
     async fn round_trip_workspace_settings() {
         use crate::db::libsql::LibSqlBackend;
-        let temp_dir = tempfile::tempdir().expect("tempdir");
-        let db_path = temp_dir.path().join("settings_test.db");
-        let backend = LibSqlBackend::new_local(&db_path)
+        let backend = LibSqlBackend::new_memory()
             .await
             .expect("LibSqlBackend");
         <LibSqlBackend as Database>::run_migrations(&backend)
@@ -481,9 +479,7 @@ mod tests {
     #[tokio::test]
     async fn delete_removes_from_workspace() {
         use crate::db::libsql::LibSqlBackend;
-        let temp_dir = tempfile::tempdir().expect("tempdir");
-        let db_path = temp_dir.path().join("settings_del_test.db");
-        let backend = LibSqlBackend::new_local(&db_path)
+        let backend = LibSqlBackend::new_memory()
             .await
             .expect("LibSqlBackend");
         <LibSqlBackend as Database>::run_migrations(&backend)
@@ -517,9 +513,7 @@ mod tests {
     #[tokio::test]
     async fn set_setting_lazily_seeds_system_config() {
         use crate::db::libsql::LibSqlBackend;
-        let temp_dir = tempfile::tempdir().expect("tempdir");
-        let db_path = temp_dir.path().join("settings_lazy_test.db");
-        let backend = LibSqlBackend::new_local(&db_path)
+        let backend = LibSqlBackend::new_memory()
             .await
             .expect("LibSqlBackend");
         <LibSqlBackend as Database>::run_migrations(&backend)
@@ -550,9 +544,7 @@ mod tests {
     #[tokio::test]
     async fn ensure_system_config_repairs_existing_metadata() {
         use crate::db::libsql::LibSqlBackend;
-        let temp_dir = tempfile::tempdir().expect("tempdir");
-        let db_path = temp_dir.path().join("settings_repair_test.db");
-        let backend = LibSqlBackend::new_local(&db_path)
+        let backend = LibSqlBackend::new_memory()
             .await
             .expect("LibSqlBackend");
         <LibSqlBackend as Database>::run_migrations(&backend)
@@ -593,9 +585,7 @@ mod tests {
     #[tokio::test]
     async fn workspace_settings_are_owner_gated_in_multi_tenant_mode() {
         use crate::db::libsql::LibSqlBackend;
-        let temp_dir = tempfile::tempdir().expect("tempdir");
-        let db_path = temp_dir.path().join("settings_gating.db");
-        let backend = LibSqlBackend::new_local(&db_path)
+        let backend = LibSqlBackend::new_memory()
             .await
             .expect("LibSqlBackend");
         <LibSqlBackend as Database>::run_migrations(&backend)

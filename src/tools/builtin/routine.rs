@@ -1211,9 +1211,8 @@ impl Tool for RoutineCreateTool {
             routine_verification_fingerprint(&routine),
         );
 
-        self.store
-            .create_routine(&routine)
-            .await
+        let create_result = self.store.create_routine(&routine).await;
+        create_result
             .map_err(|e| ToolError::ExecutionFailed(format!("failed to create routine: {e}")))?;
 
         // Refresh event cache if this is an event trigger

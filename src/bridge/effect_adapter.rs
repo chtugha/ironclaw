@@ -47,7 +47,7 @@ use ironclaw_safety::SafetyLayer;
 /// Enforces all v1 security controls at the adapter boundary:
 /// tool approval, output sanitization, hooks, rate limiting, and call limits.
 pub struct EffectBridgeAdapter {
-    tools: Arc<ToolRegistry>,
+    tools: std::sync::RwLock<Arc<ToolRegistry>>,
     safety: Arc<SafetyLayer>,
     hooks: Arc<HookRegistry>,
     /// Global auto-approve mode from agent config/env.
@@ -120,7 +120,7 @@ impl EffectBridgeAdapter {
         hooks: Arc<HookRegistry>,
     ) -> Self {
         Self {
-            tools,
+            tools: std::sync::RwLock::new(tools),
             safety,
             hooks,
             auto_approve_tools: false,
@@ -210,8 +210,19 @@ impl EffectBridgeAdapter {
     }
 
     /// Access the underlying tool registry (for param redaction, etc.).
-    pub fn tools(&self) -> &Arc<ToolRegistry> {
-        &self.tools
+    pub fn tools(&self) -> Arc<ToolRegistry> {
+        self.tools.read().unwrap().clone()
+    }
+
+    fn tools_snapshot(&self) -> Arc<ToolRegistry> {
+        self.tools.read().unwrap().clone()
+    }
+
+    /// Update the tool registry used by this adapter. This allows per-agent
+    /// tool registry updates when the global ENGINE_STATE is reused across
+    /// multiple agent instances (e.g. during tests).
+    pub fn update_tools(&self, new_tools: Arc<ToolRegistry>) {
+        *self.tools.write().unwrap() = new_tools;
     }
 
     /// Access the underlying safety layer.
@@ -288,7 +299,8 @@ impl EffectBridgeAdapter {
         lookup_name: &str,
         context: &ThreadExecutionContext,
     ) -> ToolPermissionResolution {
-        ToolPermissionSnapshot::load(self.tools.as_ref(), &context.user_id)
+        let tools = self.tools_snapshot();
+        ToolPermissionSnapshot::load(tools.as_ref(), &context.user_id)
             .await
             .resolve_permission(lookup_name)
     }
@@ -464,7 +476,8 @@ impl EffectBridgeAdapter {
         &self,
         tool_info: &ToolInfoSnapshotContext<'_>,
     ) -> Result<ActionResult, EngineError> {
-        let resolved_tool = self.tools.get_resolved(tool_info.lookup_name).await;
+        let tools = self.tools_snapshot();
+        let resolved_tool = tools.get_resolved(tool_info.lookup_name).await;
         let user_permission = self
             .resolved_user_permission_for_tool(tool_info.lookup_name, tool_info.context)
             .await;
@@ -713,6 +726,17 @@ impl EffectBridgeAdapter {
         params: &serde_json::Value,
         context: &ThreadExecutionContext,
     ) -> Option<Result<ActionResult, EngineError>> {
+        // If a dedicated routine tool is registered (v1 RoutineEngine present),
+        // let it handle the call directly — it writes to the v1 routines table
+        // that the rest of the system (event listener, history queries) reads.
+        // Only fall through to the mission alias path when no native routine
+        // tool is registered (pure v2 engine without v1 RoutineEngine).
+        if action_name.starts_with("routine_")
+            && self.tools_snapshot().get(action_name).await.is_some()
+        {
+            return None;
+        }
+
         // Translate routine_* aliases to mission_* before dispatching. The
         // routine schema is richer (kind/schedule/pattern/source/event_type/
         // filters/execution/delivery/advanced) than mission_*; the translator
@@ -1240,6 +1264,7 @@ impl EffectBridgeAdapter {
         approval_already_granted: bool,
     ) -> Result<ActionResult, EngineError> {
         let start = Instant::now();
+        let tools = self.tools_snapshot();
         let canonical_action_name = context
             .available_actions_snapshot
             .as_ref()
@@ -1247,7 +1272,7 @@ impl EffectBridgeAdapter {
             .map(|action| action.name.as_str())
             .unwrap_or(action_name);
 
-        let resolved_name = self.tools.resolve_name(canonical_action_name).await;
+        let resolved_name = tools.resolve_name(canonical_action_name).await;
         let mut lookup_name = resolved_name
             .as_deref()
             .unwrap_or(canonical_action_name)
@@ -1276,7 +1301,7 @@ impl EffectBridgeAdapter {
             .or_else(|| engine_action_schema(canonical_action_name));
         let parameters = if let Some(schema) = action_schema {
             crate::tools::prepare_params_for_schema(&parameters, &schema)
-        } else if let Some(tool) = self.tools.get(&lookup_name).await {
+        } else if let Some(tool) = tools.get(&lookup_name).await {
             crate::tools::prepare_params_for_schema(&parameters, &tool.discovery_schema())
         } else {
             parameters
@@ -1297,7 +1322,7 @@ impl EffectBridgeAdapter {
         }
 
         if self.multi_tenant {
-            let db = self.tools.database();
+            let db = tools.database();
             let policy_state =
                 load_cached_admin_tool_policy(db, &self.admin_policy_cache).await;
             if is_action_blocked_by_admin_policy(
@@ -1329,7 +1354,6 @@ impl EffectBridgeAdapter {
                 r
             });
         }
-
         if canonical_action_name == "tool_info" {
             return self
                 .execute_tool_info_from_snapshot(&ToolInfoSnapshotContext {
@@ -1424,13 +1448,13 @@ impl EffectBridgeAdapter {
             }
         }
 
-        let resolved_tool = self.tools.get_resolved(&lookup_name).await;
+        let resolved_tool = tools.get_resolved(&lookup_name).await;
         let user_permission = self
             .resolved_user_permission_for_tool(&lookup_name, context)
             .await;
         Self::ensure_tool_not_disabled(action_name, user_permission)?;
 
-        if let Some(tool) = self.tools.get(&lookup_name).await
+        if let Some(tool) = tools.get(&lookup_name).await
             && let Some(rl_config) = tool.rate_limit_config()
         {
             let result = self
@@ -1451,7 +1475,7 @@ impl EffectBridgeAdapter {
 
         {
             let has_mgr = self.auth_manager.read().await.is_some();
-            let has_reg = self.tools.credential_registry().is_some();
+            let has_reg = tools.credential_registry().is_some();
             if !has_mgr || !has_reg {
                 tracing::warn!(
                     tool = %lookup_name,
@@ -1462,7 +1486,7 @@ impl EffectBridgeAdapter {
             }
         }
         if let Some(auth_mgr) = self.auth_manager.read().await.as_ref()
-            && let Some(registry) = self.tools.credential_registry()
+            && let Some(registry) = tools.credential_registry()
         {
             match auth_mgr
                 .check_action_auth(&lookup_name, &parameters, &context.user_id, registry)
@@ -1499,7 +1523,7 @@ impl EffectBridgeAdapter {
             }
         }
 
-        if let Some(provider_extension) = self.tools.provider_extension_for_tool(&lookup_name).await
+        if let Some(provider_extension) = tools.provider_extension_for_tool(&lookup_name).await
             && let Some(auth_mgr) = self.auth_manager.read().await.as_ref()
         {
             match auth_mgr
@@ -1561,7 +1585,7 @@ impl EffectBridgeAdapter {
             .await?;
         }
 
-        let redacted_params = if let Some(tool) = self.tools.get(&lookup_name).await {
+        let redacted_params = if let Some(tool) = tools.get(&lookup_name).await {
             crate::tools::redact_params(&parameters, tool.sensitive_params())
         } else {
             parameters.clone()
@@ -1674,7 +1698,7 @@ impl EffectBridgeAdapter {
             intercepted
         } else {
             crate::tools::execute::execute_tool_with_safety(
-                &self.tools,
+                &*tools,
                 &self.safety,
                 &lookup_name,
                 parameters.clone(),
@@ -1872,7 +1896,7 @@ impl EffectBridgeAdapter {
     /// the tool's claim in that mode would let any tool prompt the user for
     /// any credential name.
     fn is_known_credential(&self, credential_name: &str) -> bool {
-        match self.tools.credential_registry() {
+        match self.tools_snapshot().credential_registry() {
             Some(registry) => registry.has_secret(credential_name),
             None => false,
         }
@@ -1948,13 +1972,14 @@ impl EffectExecutor for EffectBridgeAdapter {
         leases: &[CapabilityLease],
         context: &ThreadExecutionContext,
     ) -> Result<ActionInventory, EngineError> {
+        let tools = self.tools_snapshot();
         let auth_manager = self.auth_manager.read().await.clone();
         let capability_registry = self.capability_registry.read().await.clone();
         let extensions = self
             .fetch_extension_map(auth_manager.as_deref(), context)
             .await;
         let mut inventory = ActionProjector::project_inventory(
-            self.tools.as_ref(),
+            tools.as_ref(),
             auth_manager.as_deref(),
             capability_registry,
             leases,
@@ -1964,7 +1989,7 @@ impl EffectExecutor for EffectBridgeAdapter {
         .await?;
 
         if self.multi_tenant {
-            let db = self.tools.database();
+            let db = tools.database();
             let policy_state =
                 load_cached_admin_tool_policy(db, &self.admin_policy_cache).await;
             apply_admin_policy_to_inventory(&mut inventory, policy_state, &context.user_id, db)
@@ -5674,7 +5699,7 @@ mod tests {
             "auth_manager should be set"
         );
         assert!(
-            adapter.tools.credential_registry().is_some(),
+            adapter.tools_snapshot().credential_registry().is_some(),
             "credential_registry should be set"
         );
 

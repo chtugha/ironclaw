@@ -342,6 +342,14 @@ impl Agent {
         self.routine_engine_slot = slot;
     }
 
+    /// Return a clone of the routine-engine Arc if a V1 RoutineEngine is
+    /// active, or `None` when the agent is running in pure engine-v2 mode.
+    pub async fn routine_engine(
+        &self,
+    ) -> Option<Arc<crate::agent::routine_engine::RoutineEngine>> {
+        self.routine_engine_slot.read().await.clone()
+    }
+
     // Convenience accessors
 
     /// Get the scheduler (for external wiring, e.g. CreateJobTool).

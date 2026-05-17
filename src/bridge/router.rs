@@ -724,7 +724,7 @@ async fn insert_and_notify_pending_gate(
     notify_pending_gate(
         agent,
         state.sse.clone(),
-        state.effect_adapter.tools(),
+        &*state.effect_adapter.tools(),
         state.auth_manager.as_deref(),
         state.extension_manager.as_deref(),
         message,
@@ -1551,6 +1551,13 @@ pub async fn init_engine(agent: &Agent) -> Result<(), Error> {
     let lock = ENGINE_STATE.get_or_init(|| RwLock::new(None));
     let guard = lock.read().await;
     if guard.is_some() {
+        // ENGINE_STATE already initialized (possibly from a different agent in tests).
+        // Update the effect adapter's tool registry to the current agent's registry so
+        // that tool dispatch (e.g. routine_create → RoutineCreateTool) uses the correct
+        // per-agent database instead of whichever agent last called init_engine.
+        if let Some(ref state) = *guard {
+            state.effect_adapter.update_tools(agent.tools().clone());
+        }
         return Ok(());
     }
     drop(guard);
@@ -1558,6 +1565,11 @@ pub async fn init_engine(agent: &Agent) -> Result<(), Error> {
     // Initialize
     let mut guard = lock.write().await;
     if guard.is_some() {
+        // Another task initialized ENGINE_STATE while we waited for the write lock.
+        // Update tools just like the fast path above.
+        if let Some(ref state) = *guard {
+            state.effect_adapter.update_tools(agent.tools().clone());
+        }
         return Ok(()); // double-check after acquiring write lock
     }
 
@@ -1926,7 +1938,7 @@ pub async fn init_engine(agent: &Agent) -> Result<(), Error> {
     let gate_controller = Arc::new(crate::bridge::gate_controller::BridgeGateController::new(
         Arc::clone(&pending_gates),
         agent.deps.sse_tx.clone(),
-        Arc::clone(effect_adapter.tools()),
+        effect_adapter.tools(),
         auth_manager.clone(),
         agent.deps.extension_manager.clone(),
         Arc::clone(&agent.channels),
@@ -2769,7 +2781,7 @@ pub async fn resolve_gate(
                 let submit_target = resolve_extension_for_action(
                     state.auth_manager.as_deref(),
                     state.extension_manager.as_deref(),
-                    state.effect_adapter.tools(),
+                    &*state.effect_adapter.tools(),
                     &pending.action_name,
                     &pending.parameters,
                     credential_name.as_str(),
@@ -3570,7 +3582,7 @@ async fn handle_with_engine_inner(
             // resolve the auth-gate display name without holding the
             // engine state lock.
             let sse = state.sse.clone();
-            let tools = Arc::clone(state.effect_adapter.tools());
+            let tools = state.effect_adapter.tools();
             let auth_manager = state.auth_manager.clone();
             let extension_manager = state.extension_manager.clone();
             drop(guard);
@@ -3674,13 +3686,27 @@ async fn handle_with_engine_inner(
     // effects of the message — independent of, and parallel to, the normal
     // conversation thread spawned below. Errors are logged but never block
     // user-facing message handling.
-    //
-    // v1-created OnEvent routines are NOT fired here — only engine-store
-    // missions (created via mission_create / routine_create alias) are
-    // matched. The v1 RoutineEngine still handles cron-based routines
-    // via its ticker, but v1 OnEvent routines no longer fire on user
-    // messages.
     fire_event_missions_for_message(state, message, effective_content).await;
+
+    // Fire V1 OnEvent routines if a RoutineEngine is active.
+    // If any V1 routines match, the message is fully consumed by the routine
+    // system — skip the normal LLM conversation to prevent a spurious extra
+    // response and extra LLM call on the event message.
+    if let Some(routine_engine) = agent.routine_engine().await {
+        let fired = routine_engine
+            .check_event_triggers(message, effective_content)
+            .await;
+        if fired > 0 {
+            debug!(
+                count = fired,
+                channel = %message.channel,
+                user_id = %message.user_id,
+                "engine: fired {} v1 OnEvent routine(s) from inbound message; suppressing normal LLM response",
+                fired,
+            );
+            return Ok(BridgeOutcome::NoResponse);
+        }
+    }
 
     // Send "Thinking..." status to the channel
     let _ = agent
@@ -4380,7 +4406,7 @@ async fn await_thread_outcome(
                 let extension_name = resolve_auth_gate_extension_name(
                     state.auth_manager.as_deref(),
                     state.extension_manager.as_deref(),
-                    state.effect_adapter.tools(),
+                    &*state.effect_adapter.tools(),
                     &pending,
                 )
                 .await;

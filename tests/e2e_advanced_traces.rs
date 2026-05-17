@@ -87,6 +87,21 @@ mod advanced {
         }
     }
 
+    /// Serializes routine engine tests that share the global ENGINE_STATE singleton.
+    ///
+    /// The engine v2 state is process-global (one per binary for production use).
+    /// Tests that create agents with V1 RoutineEngine must not run concurrently,
+    /// or the global EffectBridgeAdapter may dispatch to the wrong agent's database.
+    /// This mutex ensures only one such test runs at a time.
+    ///
+    /// Safe to hold across `await` inside `#[tokio::test]` because the default
+    /// `current_thread` flavor never migrates tasks between OS threads, so
+    /// `std::sync::MutexGuard` (which is `!Send`) is never transferred.
+    fn routine_engine_test_mutex() -> std::sync::MutexGuard<'static, ()> {
+        static MUTEX: OnceLock<Mutex<()>> = OnceLock::new();
+        MUTEX.get_or_init(|| Mutex::new(())).lock().expect("routine engine test mutex poisoned")
+    }
+
     // -----------------------------------------------------------------------
     // 1. Multi-turn memory coherence
     // -----------------------------------------------------------------------
@@ -452,8 +467,10 @@ mod advanced {
     // 6b. Event routine: Telegram-scoped trigger fires on matching message
     // -----------------------------------------------------------------------
 
+    #[allow(clippy::await_holding_lock)]
     #[tokio::test]
     async fn routine_event_trigger_telegram_channel_fires() {
+        let _guard = routine_engine_test_mutex();
         let trace = LlmTrace::from_file(format!("{FIXTURES}/routine_event_telegram.json")).unwrap();
         let rig = TestRigBuilder::new()
             .with_trace(trace.clone())
@@ -528,8 +545,10 @@ mod advanced {
     // 6c. Event routine without channel filter still fires on Telegram
     // -----------------------------------------------------------------------
 
+    #[allow(clippy::await_holding_lock)]
     #[tokio::test]
     async fn routine_event_trigger_without_channel_filter_still_fires() {
+        let _guard = routine_engine_test_mutex();
         let trace =
             LlmTrace::from_file(format!("{FIXTURES}/routine_event_any_channel.json")).unwrap();
         let rig = TestRigBuilder::new()
