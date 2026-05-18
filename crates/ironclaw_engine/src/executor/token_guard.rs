@@ -92,11 +92,12 @@ const DROPPABLE_END: &str = "<!-- droppable-end -->";
 
 /// Truncate `description` to at most 60 words.
 fn truncate_to_60_words(description: &str) -> String {
-    let words: Vec<&str> = description.split_whitespace().collect();
-    if words.len() <= 60 {
+    let mut iter = description.split_whitespace();
+    let words: Vec<&str> = iter.by_ref().take(60).collect();
+    if iter.next().is_none() {
         description.to_string()
     } else {
-        words[..60].join(" ")
+        words.join(" ")
     }
 }
 
@@ -217,11 +218,10 @@ pub fn apply(budget: &PromptBudget, parts: &mut PromptParts, thread_id: &str) ->
     for schema in &mut parts.tool_schemas {
         let truncated = truncate_to_60_words(&schema.content);
         if truncated.len() < schema.content.len() {
-            let old_bytes = schema.content.len();
+            let old_tokens = token_count(&schema.content);
             schema.content = truncated;
-            let new_bytes = schema.content.len();
-            let saved_tokens = ((old_bytes - new_bytes) as f64 * 0.25) as usize;
-            current = current.saturating_sub(saved_tokens);
+            let new_tokens = token_count(&schema.content);
+            current = current.saturating_sub(old_tokens.saturating_sub(new_tokens));
             dropped.tool_descriptions_truncated += 1;
             if current <= budget.total {
                 return (dropped, true);
@@ -235,9 +235,10 @@ pub fn apply(budget: &PromptBudget, parts: &mut PromptParts, thread_id: &str) ->
 
     let new_prompt = remove_droppable_sections(&parts.system_prompt);
     if new_prompt.len() < parts.system_prompt.len() {
-        let saved_tokens = ((parts.system_prompt.len() - new_prompt.len()) as f64 * 0.25) as usize;
+        let old_tokens = token_count(&parts.system_prompt);
+        let new_tokens = token_count(&new_prompt);
         parts.system_prompt = new_prompt;
-        current = current.saturating_sub(saved_tokens);
+        current = current.saturating_sub(old_tokens.saturating_sub(new_tokens));
     }
 
     if current <= budget.total {

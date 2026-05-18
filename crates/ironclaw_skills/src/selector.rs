@@ -314,15 +314,30 @@ fn score_skill(skill: &LoadedSkill, message_lower: &str, message_original: &str)
     // Keyword scoring with cap to prevent gaming via keyword stuffing
     let mut keyword_score: u32 = 0;
     for kw_lower in &skill.lowercased_keywords {
-        // Exact word match (surrounded by word boundaries)
-        if message_lower
-            .split_whitespace()
-            .any(|word| word.trim_matches(|c: char| !c.is_alphanumeric()) == kw_lower.as_str())
-        {
-            keyword_score += 10;
-        } else if message_lower.contains(kw_lower.as_str()) {
-            // Substring match
-            keyword_score += 5;
+        let kw_str = kw_lower.as_str();
+        let is_multi_word = kw_str.contains(' ');
+        if is_multi_word {
+            // Multi-word keyword: "exact" match means the phrase appears in the
+            // message text (already lowercased). Give it the same 10-point bonus
+            // as a single-word exact match.  The substring match below is still
+            // the fallback (5 pts) but for multi-word phrases both paths resolve
+            // to a substring check, so we award 10 here unconditionally when found.
+            if message_lower.contains(kw_str) {
+                keyword_score += 10;
+            }
+        } else {
+            // Single-word keyword: require a proper word boundary so "note" does
+            // not fire for "notebook". Split_whitespace + strip punctuation gives
+            // good-enough boundary detection without regex overhead.
+            if message_lower
+                .split_whitespace()
+                .any(|word| word.trim_matches(|c: char| !c.is_alphanumeric()) == kw_str)
+            {
+                keyword_score += 10;
+            } else if message_lower.contains(kw_str) {
+                // Substring match (e.g. keyword is a stem, message has a derived form)
+                keyword_score += 5;
+            }
         }
     }
     score += keyword_score.min(MAX_KEYWORD_SCORE);

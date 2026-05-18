@@ -150,7 +150,11 @@ impl Tool for LocalSearchTool {
             .unwrap_or(".");
 
         let search_path = if scope == "global" {
-            PathBuf::from(path_str)
+            let raw = PathBuf::from(path_str);
+            match std::fs::canonicalize(&raw) {
+                Ok(canonical) => canonical,
+                Err(_) => raw,
+            }
         } else {
             let base = self.base_dir.clone().unwrap_or_else(|| {
                 std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."))
@@ -207,7 +211,7 @@ impl Tool for LocalSearchTool {
         }
 
         cmd.arg("-e").arg(pattern);
-        cmd.arg(&search_path);
+        cmd.arg("--").arg(&search_path);
 
         let output = tokio::time::timeout(Duration::from_secs(30), cmd.output())
             .await

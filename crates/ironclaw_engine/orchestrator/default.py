@@ -767,18 +767,38 @@ def is_trivial(goal, config):
 
 
 def find_plan_template(docs, goal):
-    """Find a plan template in retrieved docs matching the goal. Templates are authoritative."""
+    """Find a plan template in retrieved docs matching the goal. Templates are authoritative.
+
+    Requires at least one keyword/tag from the template to appear in the goal text
+    so that a high-confidence-but-unrelated template does not hijack the plan.
+    When the template declares no keywords (metadata is missing or empty list), the
+    semantic relevance from __retrieve_docs__ is trusted and the template is accepted.
+    """
+    goal_lower = goal.lower()
+    goal_words = set(goal_lower.split())
     for doc in docs:
         if doc.get("type", "").lower() == "plan":
             meta = doc.get("metadata", {})
-            if isinstance(meta, dict) and meta.get("is_template"):
-                steps = meta.get("steps")
-                if steps and isinstance(steps, list):
-                    return {
-                        "steps": steps,
-                        "confidence": meta.get("confidence", 0.8),
-                        "doc_id": doc.get("doc_id", ""),
-                    }
+            if not isinstance(meta, dict) or not meta.get("is_template"):
+                continue
+            steps = meta.get("steps")
+            if not (steps and isinstance(steps, list)):
+                continue
+            keywords = meta.get("keywords", []) or []
+            tags = meta.get("tags", []) or []
+            all_kw = [str(k).lower() for k in keywords + tags if k]
+            if all_kw:
+                match = any(
+                    kw in goal_lower or any(kw_word in goal_words for kw_word in kw.split())
+                    for kw in all_kw
+                )
+                if not match:
+                    continue
+            return {
+                "steps": steps,
+                "confidence": meta.get("confidence", 0.8),
+                "doc_id": doc.get("doc_id", ""),
+            }
     return None
 
 
@@ -1285,23 +1305,23 @@ def run_loop(context, goal, actions, state, config):
                 knowledge = format_docs(docs)
                 append_system_append(working_messages, knowledge)
 
+            __set_active_skills__([
+                {
+                    "doc_id": s.get("doc_id", ""),
+                    "name": s.get("metadata", {}).get("name", "?"),
+                    "version": s.get("metadata", {}).get("version", 1),
+                    "snippet_names": [
+                        sn.get("name", "")
+                        for sn in s.get("metadata", {}).get("code_snippets", [])
+                        if sn.get("name")
+                    ],
+                    "force_activated": (
+                        s.get("metadata", {}).get("name", "") in explicit_names
+                    ),
+                }
+                for s in active_skills
+            ])
             if active_skills:
-                __set_active_skills__([
-                    {
-                        "doc_id": s.get("doc_id", ""),
-                        "name": s.get("metadata", {}).get("name", "?"),
-                        "version": s.get("metadata", {}).get("version", 1),
-                        "snippet_names": [
-                            sn.get("name", "")
-                            for sn in s.get("metadata", {}).get("code_snippets", [])
-                            if sn.get("name")
-                        ],
-                        "force_activated": (
-                            s.get("metadata", {}).get("name", "") in explicit_names
-                        ),
-                    }
-                    for s in active_skills
-                ])
                 skill_text = format_skills(active_skills)
                 append_system_append(working_messages, skill_text)
                 # Emit skill activation event for CLI/gateway display

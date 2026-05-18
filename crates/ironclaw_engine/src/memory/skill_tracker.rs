@@ -79,7 +79,7 @@ impl SkillTracker {
                 .unwrap_or(0)
                 + if success { 0 } else { 1 };
             let confidence =
-                (1.0 - (failure_count as f64 / (execution_count as f64 + 1.0))).clamp(0.0, 1.0);
+                (1.0 - (failure_count as f64 / execution_count as f64)).clamp(0.0, 1.0);
             obj.insert(
                 "execution_count".to_string(),
                 serde_json::Value::Number(execution_count.into()),
@@ -451,7 +451,7 @@ mod tests {
 
         assert_eq!(execution_count, 3);
         assert_eq!(failure_count, 1);
-        let expected = 1.0 - (1.0f64 / (3.0 + 1.0));
+        let expected = 1.0 - (1.0f64 / 3.0);
         assert!((confidence - expected).abs() < 1e-6, "confidence={confidence} expected≈{expected}");
     }
 
@@ -473,7 +473,7 @@ mod tests {
 
         assert_eq!(execution_count, 3);
         assert_eq!(failure_count, 2);
-        let expected = (1.0 - (2.0f64 / (3.0 + 1.0))).clamp(0.0, 1.0);
+        let expected = (1.0 - (2.0f64 / 3.0)).clamp(0.0, 1.0);
         assert!((confidence - expected).abs() < 1e-6, "confidence={confidence} expected≈{expected}");
     }
 

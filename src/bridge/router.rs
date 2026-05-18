@@ -1258,6 +1258,10 @@ struct EngineState {
     thread_manager: Arc<ThreadManager>,
     conversation_manager: Arc<ConversationManager>,
     effect_adapter: Arc<EffectBridgeAdapter>,
+    /// Kept here so the fast-path `init_engine` re-entry can update
+    /// `platform_info` when a different agent calls `init_engine` (e.g.
+    /// in multi-tenant or test scenarios) without rebuilding the adapter.
+    llm_adapter: Arc<LlmBridgeAdapter>,
     store: Arc<dyn Store>,
     default_project_id: ironclaw_engine::ProjectId,
     /// Unified pending gate store — keyed by (user_id, thread_id).
@@ -1555,8 +1559,11 @@ pub async fn init_engine(agent: &Agent) -> Result<(), Error> {
         // Update the effect adapter's tool registry to the current agent's registry so
         // that tool dispatch (e.g. routine_create → RoutineCreateTool) uses the correct
         // per-agent database instead of whichever agent last called init_engine.
+        // Also update platform_info so local/cloud classification reflects the current agent.
         if let Some(ref state) = *guard {
             state.effect_adapter.update_tools(agent.tools().clone());
+            let platform_info = agent.platform_info().await;
+            state.llm_adapter.update_platform_info(platform_info);
         }
         return Ok(());
     }
@@ -1566,9 +1573,11 @@ pub async fn init_engine(agent: &Agent) -> Result<(), Error> {
     let mut guard = lock.write().await;
     if guard.is_some() {
         // Another task initialized ENGINE_STATE while we waited for the write lock.
-        // Update tools just like the fast path above.
+        // Update tools and platform_info just like the fast path above.
         if let Some(ref state) = *guard {
             state.effect_adapter.update_tools(agent.tools().clone());
+            let platform_info = agent.platform_info().await;
+            state.llm_adapter.update_platform_info(platform_info);
         }
         return Ok(()); // double-check after acquiring write lock
     }
@@ -1673,6 +1682,7 @@ pub async fn init_engine(agent: &Agent) -> Result<(), Error> {
         .set_capability_registry(Arc::clone(&capabilities))
         .await;
 
+    let llm_adapter_for_state = Arc::clone(&llm_adapter);
     let thread_manager = Arc::new(ThreadManager::new(
         llm_adapter,
         effect_adapter.clone(),
@@ -1953,6 +1963,7 @@ pub async fn init_engine(agent: &Agent) -> Result<(), Error> {
         thread_manager,
         conversation_manager,
         effect_adapter,
+        llm_adapter: llm_adapter_for_state,
         store: store.clone(),
         default_project_id: project_id,
         pending_gates,
@@ -4115,6 +4126,10 @@ async fn await_thread_outcome(
         .await
         .map_err(|e| engine_err("join error", e))?;
 
+    if let Some(mm) = state.effect_adapter.mission_manager().await {
+        mm.record_activity().await;
+    }
+
     state
         .conversation_manager
         .record_thread_outcome(conv_id, thread_id, &outcome)
@@ -6259,7 +6274,7 @@ pub(crate) mod test_support {
         ProjectId, Step, Store, Thread, ThreadEvent, ThreadId, ThreadManager, ThreadState,
     };
 
-    use super::{ENGINE_STATE, EngineState};
+    use super::{ENGINE_STATE, EngineState, LlmBridgeAdapter};
 
     /// Shared lock serializing all cross-module engine-state tests.
     ///
@@ -6480,6 +6495,7 @@ pub(crate) mod test_support {
             thread_manager: tm,
             conversation_manager: cm,
             effect_adapter,
+            llm_adapter: Arc::new(LlmBridgeAdapter::noop_for_tests()),
             store: store_dyn,
             default_project_id: project_id,
             pending_gates: Arc::new(crate::gate::store::PendingGateStore::in_memory()),
@@ -8676,6 +8692,7 @@ mod tests {
             thread_manager: tm,
             conversation_manager: cm,
             effect_adapter,
+            llm_adapter: Arc::new(LlmBridgeAdapter::noop_for_tests()),
             store: store_dyn,
             default_project_id: ironclaw_engine::ProjectId::new(),
             pending_gates: Arc::new(crate::gate::store::PendingGateStore::in_memory()),
@@ -8837,6 +8854,7 @@ mod tests {
             thread_manager: tm,
             conversation_manager: cm,
             effect_adapter,
+            llm_adapter: Arc::new(LlmBridgeAdapter::noop_for_tests()),
             store: store_dyn,
             default_project_id: ironclaw_engine::ProjectId::new(),
             pending_gates: Arc::new(crate::gate::store::PendingGateStore::in_memory()),
@@ -10512,6 +10530,7 @@ mod tests {
             )),
             thread_manager,
             effect_adapter: effect,
+            llm_adapter: Arc::new(LlmBridgeAdapter::noop_for_tests()),
             store,
             default_project_id: ironclaw_engine::ProjectId::new(),
             pending_gates,

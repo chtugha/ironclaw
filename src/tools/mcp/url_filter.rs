@@ -5,14 +5,30 @@ const FILE_URL_PREFIX: &str = "file://";
 const BLOCK_MSG: &str =
     "file:// URLs are blocked for security. Use the local_search tool for filesystem access.";
 
+/// Strip ASCII control characters (`\t`, `\n`, `\r`) and leading/trailing
+/// whitespace from a URL string.  WHATWG-compliant parsers (used by browsers,
+/// `reqwest`, Node.js `fetch`) silently remove these characters anywhere inside
+/// a URL, so `"f\nile:///etc/passwd"` reaches the HTTP client as
+/// `"file:///etc/passwd"` even though the raw string doesn't start with
+/// `file://`.  Normalising before the prefix check closes this bypass.
+#[inline]
+fn strip_url_noise(s: &str) -> String {
+    let cleaned: String = s
+        .chars()
+        .filter(|c| !matches!(c, '\t' | '\n' | '\r'))
+        .collect();
+    cleaned.trim().to_string()
+}
+
 #[inline]
 fn is_file_url(s: &str) -> bool {
+    let s = strip_url_noise(s);
     if s.len() >= FILE_URL_PREFIX.len()
         && s.as_bytes()[..FILE_URL_PREFIX.len()].eq_ignore_ascii_case(FILE_URL_PREFIX.as_bytes())
     {
         return true;
     }
-    let decoded = percent_decode(s);
+    let decoded = percent_decode(&s);
     decoded.len() >= FILE_URL_PREFIX.len()
         && decoded.as_bytes()[..FILE_URL_PREFIX.len()]
             .eq_ignore_ascii_case(FILE_URL_PREFIX.as_bytes())
@@ -23,15 +39,12 @@ fn percent_decode(s: &str) -> String {
     let mut out = Vec::with_capacity(bytes.len());
     let mut i = 0;
     while i < bytes.len() {
-        if bytes[i] == b'%' && i + 2 < bytes.len() {
-            if let (Some(hi), Some(lo)) = (
-                hex_val(bytes[i + 1]),
-                hex_val(bytes[i + 2]),
-            ) {
-                out.push(hi << 4 | lo);
-                i += 3;
-                continue;
-            }
+        if bytes[i] == b'%' && i + 2 < bytes.len()
+            && let (Some(hi), Some(lo)) = (hex_val(bytes[i + 1]), hex_val(bytes[i + 2]))
+        {
+            out.push(hi << 4 | lo);
+            i += 3;
+            continue;
         }
         out.push(bytes[i]);
         i += 1;
@@ -172,6 +185,21 @@ mod tests {
         assert!(reject_if_file_url(&params).is_err());
 
         let params = json!({"url": "FILE%3A%2F%2Fetc/passwd"});
+        assert!(reject_if_file_url(&params).is_err());
+    }
+
+    #[test]
+    fn control_chars_in_file_url_are_rejected() {
+        let params = json!({"url": "f\nile:///etc/passwd"});
+        assert!(reject_if_file_url(&params).is_err());
+
+        let params = json!({"url": "fi\tle:///etc/passwd"});
+        assert!(reject_if_file_url(&params).is_err());
+
+        let params = json!({"url": "\r\nfile:///etc/shadow"});
+        assert!(reject_if_file_url(&params).is_err());
+
+        let params = json!({"url": "  file:///etc/hosts"});
         assert!(reject_if_file_url(&params).is_err());
     }
 

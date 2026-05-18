@@ -73,7 +73,9 @@ pub struct LlmBridgeAdapter {
     provider: Arc<dyn LlmProvider>,
     /// Optional cheaper provider for sub-calls (depth > 0).
     cheap_provider: Option<Arc<dyn LlmProvider>>,
-    platform_info: Option<ironclaw_engine::PlatformInfo>,
+    /// Interior-mutable so the fast-path `init_engine` re-entry can update the
+    /// platform info for the current agent without rebuilding the whole adapter.
+    platform_info: std::sync::RwLock<Option<ironclaw_engine::PlatformInfo>>,
 }
 
 impl LlmBridgeAdapter {
@@ -84,13 +86,19 @@ impl LlmBridgeAdapter {
         Self {
             provider,
             cheap_provider,
-            platform_info: None,
+            platform_info: std::sync::RwLock::new(None),
         }
     }
 
-    pub fn with_platform_info(mut self, info: ironclaw_engine::PlatformInfo) -> Self {
-        self.platform_info = Some(info);
+    pub fn with_platform_info(self, info: ironclaw_engine::PlatformInfo) -> Self {
+        *self.platform_info.write().unwrap() = Some(info);
         self
+    }
+
+    /// Update the platform info for the current agent. Called from the ENGINE_STATE
+    /// fast path so each agent's local/cloud classification is reflected correctly.
+    pub fn update_platform_info(&self, info: ironclaw_engine::PlatformInfo) {
+        *self.platform_info.write().unwrap() = Some(info);
     }
 
     fn provider_for_depth(&self, depth: u32) -> &Arc<dyn LlmProvider> {
@@ -277,7 +285,7 @@ impl LlmBackend for LlmBridgeAdapter {
     }
 
     fn platform_info(&self) -> Option<ironclaw_engine::PlatformInfo> {
-        self.platform_info.clone()
+        self.platform_info.read().unwrap().clone()
     }
 }
 
@@ -1948,5 +1956,37 @@ And also check the token price:\n\
             output.usage.cost_usd,
             naive
         );
+    }
+}
+
+#[cfg(test)]
+impl LlmBridgeAdapter {
+    /// Construct a `LlmBridgeAdapter` backed by a no-op provider. Intended only
+    /// for test helpers that need an `Arc<LlmBridgeAdapter>` in `EngineState`
+    /// but never actually call the LLM.
+    pub fn noop_for_tests() -> Self {
+        struct NoopProvider;
+        #[async_trait::async_trait]
+        impl crate::llm::LlmProvider for NoopProvider {
+            fn model_name(&self) -> &str {
+                "noop"
+            }
+            fn cost_per_token(&self) -> (rust_decimal::Decimal, rust_decimal::Decimal) {
+                (rust_decimal::Decimal::ZERO, rust_decimal::Decimal::ZERO)
+            }
+            async fn complete(
+                &self,
+                _req: crate::llm::CompletionRequest,
+            ) -> Result<crate::llm::CompletionResponse, crate::llm::LlmError> {
+                unreachable!("noop LLM provider called")
+            }
+            async fn complete_with_tools(
+                &self,
+                _req: crate::llm::ToolCompletionRequest,
+            ) -> Result<crate::llm::ToolCompletionResponse, crate::llm::LlmError> {
+                unreachable!("noop LLM provider called")
+            }
+        }
+        LlmBridgeAdapter::new(std::sync::Arc::new(NoopProvider), None)
     }
 }
