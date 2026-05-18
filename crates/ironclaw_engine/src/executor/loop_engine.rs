@@ -514,16 +514,21 @@ impl ExecutionLoop {
 
                 // Record failure for auto-rollback tracking
                 if let Some(store) = self.store.as_ref() {
-                    crate::executor::orchestrator::record_orchestrator_failure(
+                    let failure_count = crate::executor::orchestrator::record_orchestrator_failure(
                         store,
                         self.thread.project_id,
                         orchestrator_version,
                     )
                     .await;
 
-                    // Emit rollback event if this version will be skipped next time
-                    // (failure count was just incremented, so check >= threshold - 1)
-                    if orchestrator_version > 0 {
+                    // Only emit the rollback event when the threshold is actually
+                    // crossed — not on every failure. The actual rollback happens on
+                    // the next `load_orchestrator_from_docs` call; emitting early
+                    // would confuse observers and generate spurious alerts.
+                    if orchestrator_version > 0
+                        && failure_count
+                            >= crate::executor::orchestrator::MAX_FAILURES_BEFORE_ROLLBACK
+                    {
                         self.emit_event(EventKind::OrchestratorRollback {
                             from_version: orchestrator_version,
                             to_version: orchestrator_version.saturating_sub(1),

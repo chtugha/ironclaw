@@ -1560,11 +1560,21 @@ pub async fn init_engine(agent: &Agent) -> Result<(), Error> {
         // that tool dispatch (e.g. routine_create → RoutineCreateTool) uses the correct
         // per-agent database instead of whichever agent last called init_engine.
         // Also update platform_info so local/cloud classification reflects the current agent.
-        if let Some(ref state) = *guard {
-            state.effect_adapter.update_tools(agent.tools().clone());
-            let platform_info = agent.platform_info().await;
-            state.llm_adapter.update_platform_info(platform_info);
-        }
+        //
+        // Clone Arc handles and drop the read guard before awaiting platform_info() to
+        // prevent holding the lock across the await point (which would block any concurrent
+        // write-lock acquisition for the duration of the async call).
+        let (effect_adapter, llm_adapter) = match *guard {
+            Some(ref state) => (
+                Arc::clone(&state.effect_adapter),
+                Arc::clone(&state.llm_adapter),
+            ),
+            None => unreachable!("guard.is_some() checked above"),
+        };
+        drop(guard);
+        effect_adapter.update_tools(agent.tools().clone());
+        let platform_info = agent.platform_info().await;
+        llm_adapter.update_platform_info(platform_info);
         return Ok(());
     }
     drop(guard);
@@ -1574,11 +1584,17 @@ pub async fn init_engine(agent: &Agent) -> Result<(), Error> {
     if guard.is_some() {
         // Another task initialized ENGINE_STATE while we waited for the write lock.
         // Update tools and platform_info just like the fast path above.
-        if let Some(ref state) = *guard {
-            state.effect_adapter.update_tools(agent.tools().clone());
-            let platform_info = agent.platform_info().await;
-            state.llm_adapter.update_platform_info(platform_info);
-        }
+        let (effect_adapter, llm_adapter) = match *guard {
+            Some(ref state) => (
+                Arc::clone(&state.effect_adapter),
+                Arc::clone(&state.llm_adapter),
+            ),
+            None => unreachable!("guard.is_some() checked above"),
+        };
+        drop(guard);
+        effect_adapter.update_tools(agent.tools().clone());
+        let platform_info = agent.platform_info().await;
+        llm_adapter.update_platform_info(platform_info);
         return Ok(()); // double-check after acquiring write lock
     }
 

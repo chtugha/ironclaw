@@ -828,7 +828,7 @@ def find_cached_plan(docs, goal):
 
 def run_minimal_planning_call(goal, actions):
     """Isolated LLM call to generate a numbered plan. Returns list of steps or None."""
-    if _token_count(goal) > 100:
+    if _token_count(goal) > 300:
         return None
     planning_messages = [
         {
@@ -923,7 +923,10 @@ def run_decomposition_loop(subtasks, original_goal, actions, config, state, resu
     subtask_config["step_count"] = 0
 
     prior_plan_doc_id = state.pop("active_plan_doc_id", None)
-    decomp_plan_doc_id = __save_plan_doc__(original_goal, subtasks, True)
+    try:
+        decomp_plan_doc_id = __save_plan_doc__(original_goal, subtasks, True)
+    except Exception:
+        decomp_plan_doc_id = None
     if decomp_plan_doc_id:
         state["active_plan_doc_id"] = decomp_plan_doc_id
 
@@ -973,12 +976,11 @@ def run_decomposition_loop(subtasks, original_goal, actions, config, state, resu
                 pass
             return {**subtask_result, "state": state}
         if subtask_outcome not in ("completed",):
-            for doc_id in (decomp_plan_doc_id, prior_plan_doc_id):
-                if doc_id:
-                    try:
-                        __record_skill_usage__(doc_id, False)
-                    except Exception:
-                        pass
+            if prior_plan_doc_id:
+                try:
+                    __record_skill_usage__(prior_plan_doc_id, False)
+                except Exception:
+                    pass
             try:
                 _do_transition("failed", "subtask failed: " + subtask, config)
             except Exception:
@@ -988,12 +990,11 @@ def run_decomposition_loop(subtasks, original_goal, actions, config, state, resu
         if subtask_result.get("response"):
             state["_last_response"] = str(subtask_result["response"])[:800]
 
-    for doc_id in (decomp_plan_doc_id, prior_plan_doc_id):
-        if doc_id:
-            try:
-                __record_skill_usage__(doc_id, True)
-            except Exception:
-                pass
+    if prior_plan_doc_id:
+        try:
+            __record_skill_usage__(prior_plan_doc_id, True)
+        except Exception:
+            pass
     try:
         _do_transition("completed", "all subtasks completed", config)
     except Exception:

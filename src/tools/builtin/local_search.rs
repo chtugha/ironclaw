@@ -223,6 +223,20 @@ impl Tool for LocalSearchTool {
                     "Glob pattern must not re-include excluded directories (.git, node_modules, target).".to_string()
                 ));
             }
+            if scope == "global" {
+                const SENSITIVE_GLOB_SUBSTRINGS: &[&str] = &[
+                    "id_rsa", "id_ed25519", "id_ecdsa", "id_dsa",
+                    "*.pem", "*.key", "*.p12", "*.pfx", "*.crt",
+                ];
+                let g_lower_ref = g_lower.as_str();
+                if let Some(pat) = SENSITIVE_GLOB_SUBSTRINGS.iter().find(|&&p| g_lower_ref.contains(p)) {
+                    return Err(ToolError::InvalidParameters(format!(
+                        "Glob pattern '{}' matches sensitive credential files (matched '{}') and is not \
+                         allowed in global scope. Use workspace scope to limit the search.",
+                        g, pat
+                    )));
+                }
+            }
             cmd.arg("--glob").arg(g);
         }
 
@@ -428,6 +442,57 @@ mod tests {
         assert!(
             result.is_ok(),
             "Expected success with allow_global_scope=true, got: {:?}",
+            result.unwrap_err()
+        );
+    }
+
+    #[tokio::test]
+    async fn test_sensitive_glob_blocked_in_global_scope() {
+        let tool = LocalSearchTool::new().with_settings(LocalSearchSettings {
+            allow_global_scope: true,
+        });
+        let ctx = make_ctx();
+        for glob in &["id_rsa*", "id_ed25519", "*.pem", "*.key", "*.p12"] {
+            let params = serde_json::json!({
+                "pattern": "PRIVATE KEY",
+                "scope": "global",
+                "path": "/tmp",
+                "glob": glob
+            });
+            let result = tool.execute(params, &ctx).await;
+            assert!(
+                result.is_err(),
+                "Expected error for sensitive glob '{}' in global scope",
+                glob
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn test_sensitive_glob_allowed_in_workspace_scope() {
+        if !is_rg_available() {
+            eprintln!("SKIPPING: ripgrep (rg) not installed");
+            return;
+        }
+        let dir = TempDir::new().unwrap();
+        std::fs::write(dir.path().join("test.pem"), "not a real cert\n").unwrap();
+
+        let tool = LocalSearchTool::new()
+            .with_settings(LocalSearchSettings {
+                allow_global_scope: false,
+            })
+            .with_base_dir(dir.path().to_path_buf());
+
+        let ctx = make_ctx();
+        let params = serde_json::json!({
+            "pattern": "cert",
+            "scope": "workspace",
+            "glob": "*.pem"
+        });
+        let result = tool.execute(params, &ctx).await;
+        assert!(
+            result.is_ok(),
+            "Sensitive globs should be allowed in workspace scope, got: {:?}",
             result.unwrap_err()
         );
     }

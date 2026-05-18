@@ -143,6 +143,15 @@ impl SkillTracker {
                 reason: format!("skill doc not found: {}", doc_id.0),
             })?;
 
+        if doc.doc_type != DocType::Skill {
+            return Err(EngineError::Skill {
+                reason: format!(
+                    "doc {} has type {:?}, expected Skill for update_skill",
+                    doc_id.0, doc.doc_type
+                ),
+            });
+        }
+
         let mut meta: V2SkillMetadata =
             serde_json::from_value(doc.metadata.clone()).map_err(|e| EngineError::Skill {
                 reason: format!("invalid skill metadata: {e}"),
@@ -211,6 +220,15 @@ impl SkillTracker {
             .ok_or_else(|| EngineError::Skill {
                 reason: format!("skill doc not found: {}", doc_id.0),
             })?;
+
+        if doc.doc_type != DocType::Skill {
+            return Err(EngineError::Skill {
+                reason: format!(
+                    "doc {} has type {:?}, expected Skill for rollback_skill",
+                    doc_id.0, doc.doc_type
+                ),
+            });
+        }
 
         let mut meta: V2SkillMetadata =
             serde_json::from_value(doc.metadata.clone()).map_err(|e| EngineError::Skill {

@@ -19,8 +19,17 @@ fn strip_url_noise(s: &str) -> String {
         .chars()
         .filter(|c| {
             let cp = *c as u32;
-            !(cp <= 0x1F || cp == 0x7F || cp == 0xFEFF
-                || cp == 0x00A0 || cp == 0x2028 || cp == 0x2029)
+            !(cp <= 0x1F                        // C0 controls
+                || cp == 0x7F                   // DEL
+                || cp == 0xFEFF                 // BOM / ZWNBSP
+                || cp == 0x00A0                 // NBSP
+                || cp == 0x00AD                 // soft hyphen
+                || (0x200B..=0x200F).contains(&cp) // ZWS, ZWNJ, ZWJ, LRM, RLM
+                || cp == 0x2028                 // line separator
+                || cp == 0x2029                 // paragraph separator
+                || cp == 0x2060                 // word joiner
+                || (0x2061..=0x2064).contains(&cp) // invisible math operators
+                || cp == 0xFFF9 || cp == 0xFFFA || cp == 0xFFFB) // interlinear annotations
         })
         .collect();
     cleaned.trim().to_string()
@@ -45,7 +54,9 @@ fn fully_percent_decode(s: &str) -> String {
 fn is_blocked_scheme(s: &str) -> Option<&'static str> {
     let cleaned = strip_url_noise(s);
     let normalized = normalize_slashes(&cleaned);
-    for check in [&normalized, &fully_percent_decode(&normalized)] {
+    let decoded = fully_percent_decode(&normalized);
+    let decoded_cleaned = strip_url_noise(&decoded);
+    for check in [&normalized, &decoded_cleaned] {
         let lower = check.to_ascii_lowercase();
         for &scheme in BLOCKED_SCHEMES {
             if lower.starts_with(scheme) {
@@ -267,6 +278,30 @@ mod tests {
     #[test]
     fn bom_prefix_does_not_bypass() {
         let params = json!({"url": "\u{FEFF}file:///etc/passwd"});
+        assert!(reject_if_file_url(&params).is_err());
+    }
+
+    #[test]
+    fn zero_width_space_prefix_does_not_bypass() {
+        let params = json!({"url": "\u{200B}file:///etc/passwd"});
+        assert!(reject_if_file_url(&params).is_err());
+
+        let params = json!({"url": "\u{200C}file:///etc/passwd"});
+        assert!(reject_if_file_url(&params).is_err());
+
+        let params = json!({"url": "\u{200D}file:///etc/passwd"});
+        assert!(reject_if_file_url(&params).is_err());
+
+        let params = json!({"url": "\u{2060}file:///etc/passwd"});
+        assert!(reject_if_file_url(&params).is_err());
+
+        let params = json!({"url": "\u{00AD}file:///etc/passwd"});
+        assert!(reject_if_file_url(&params).is_err());
+    }
+
+    #[test]
+    fn zero_width_space_percent_encoded_does_not_bypass() {
+        let params = json!({"url": "%E2%80%8Bfile:///etc/passwd"});
         assert!(reject_if_file_url(&params).is_err());
     }
 

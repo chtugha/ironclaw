@@ -620,6 +620,8 @@ impl MissionManager {
         // so the cooldown is dead state and would otherwise leak until the
         // process restarts.
         self.last_fire_attempt.write().await.remove(&id);
+        self.dedup_table.write().await.retain(|(mid, _), _| *mid != id);
+        self.evict_event_regex(id).await;
         debug!(mission_id = %id, "mission paused");
         Ok(())
     }
@@ -696,6 +698,7 @@ impl MissionManager {
         // Terminal state — drop the cooldown entry so the in-memory map
         // doesn't accumulate an entry per mission ever fired.
         self.last_fire_attempt.write().await.remove(&id);
+        self.dedup_table.write().await.retain(|(mid, _), _| *mid != id);
         self.evict_event_regex(id).await;
         debug!(mission_id = %id, "mission completed");
         Ok(())
@@ -1258,6 +1261,7 @@ impl MissionManager {
         user_id: &str,
         payload: Option<serde_json::Value>,
     ) -> Result<Vec<ThreadId>, EngineError> {
+        self.record_activity().await;
         let active_ids = self.active.read().await.clone();
         let mut spawned = Vec::new();
 
@@ -2152,8 +2156,13 @@ impl MissionManager {
         let notification_tx = self.notification_tx.clone();
         let last_activity_at = Arc::clone(&self.last_activity_at);
         tokio::spawn(async move {
-            match tm.join_thread(thread_id).await {
-                Ok(outcome) => {
+            // Bound the watcher lifetime to prevent indefinite task leaks for
+            // threads that enter a waiting/gate state that is never resolved.
+            // Use the maximum orchestrator duration (3600 s) plus a generous
+            // buffer (600 s) to cover threads paused at the gate.
+            const WATCHER_TIMEOUT: Duration = Duration::from_secs(4200);
+            match tokio::time::timeout(WATCHER_TIMEOUT, tm.join_thread(thread_id)).await {
+                Ok(Ok(outcome)) => {
                     let now = chrono::Utc::now();
                     *last_activity_at.write().await = now;
                     if let Err(e) = store
@@ -2176,8 +2185,16 @@ impl MissionManager {
                         debug!(mission_id = %mission_id, "failed to process outcome: {e}");
                     }
                 }
-                Err(e) => {
+                Ok(Err(e)) => {
                     debug!(mission_id = %mission_id, "thread join failed: {e}");
+                }
+                Err(_) => {
+                    debug!(
+                        mission_id = %mission_id,
+                        thread_id = %thread_id,
+                        timeout_secs = WATCHER_TIMEOUT.as_secs(),
+                        "mission outcome watcher timed out — thread may be stuck in a gate"
+                    );
                 }
             }
         });

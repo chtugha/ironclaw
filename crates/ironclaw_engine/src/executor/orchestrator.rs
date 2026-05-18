@@ -212,7 +212,7 @@ fn orchestrator_vm_panic(prefix: &str, phase: &'static str) -> OrchestratorFailu
 }
 
 /// Maximum consecutive failures before auto-rollback.
-const MAX_FAILURES_BEFORE_ROLLBACK: u64 = 3;
+pub(crate) const MAX_FAILURES_BEFORE_ROLLBACK: u64 = 3;
 
 /// Well-known title for orchestrator failure tracking.
 const FAILURE_TRACKER_TITLE: &str = "orchestrator:failures";
@@ -343,18 +343,21 @@ pub fn load_orchestrator_from_docs(
 }
 
 /// Record a failure for the current orchestrator version.
+///
+/// Returns the updated consecutive failure count for this version, so the
+/// caller can decide whether the rollback threshold has been crossed.
 pub async fn record_orchestrator_failure(
     store: &Arc<dyn Store>,
     project_id: ProjectId,
     version: u64,
-) {
+) -> u64 {
     use crate::types::memory::{DocType, MemoryDoc};
 
     let docs = match store.list_shared_memory_docs(project_id).await {
         Ok(docs) => docs,
         Err(e) => {
             debug!("failed to list memory docs for failure tracker: {e}");
-            return;
+            return 0;
         }
     };
     let existing = docs.iter().find(|d| d.title == FAILURE_TRACKER_TITLE);
@@ -402,6 +405,7 @@ pub async fn record_orchestrator_failure(
     }
 
     debug!(version, count = new_count, "recorded orchestrator failure");
+    new_count
 }
 
 /// Reset the failure counter (called after successful execution).
@@ -1747,7 +1751,9 @@ async fn handle_execute_actions_parallel(
 
     if runnable.len() == 1 {
         // Single call: execute directly with inline gate-await retry.
-        let (idx, lease) = runnable.into_iter().next().unwrap(); // safety: len()==1 checked above
+        let Some((idx, lease)) = runnable.into_iter().next() else {
+            unreachable!("runnable.len()==1 checked above");
+        };
         let pc = &parsed[idx];
         let action_name = available_actions
             .iter()
