@@ -152,7 +152,10 @@ impl Tool for LocalSearchTool {
         let search_path = if scope == "global" {
             PathBuf::from(path_str)
         } else {
-            validate_path(path_str, self.base_dir.as_deref())?
+            let base = self.base_dir.clone().unwrap_or_else(|| {
+                std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."))
+            });
+            validate_path(path_str, Some(&base))?
         };
 
         if is_sensitive_path(&search_path) {

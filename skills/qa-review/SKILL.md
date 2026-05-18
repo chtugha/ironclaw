@@ -21,7 +21,7 @@ activation:
     - developer
     - testing
     - review
-  max_context_tokens: 128
+  max_context_tokens: 320
 ---
 
 # QA Review

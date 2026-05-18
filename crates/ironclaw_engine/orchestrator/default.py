@@ -604,7 +604,7 @@ def select_skills(skills, goal, max_candidates=3, max_tokens=2048):
 
     skills = [
         sk for sk in skills
-        if sk.get("metadata", {}).get("activation", {}).get("max_context_tokens", 0) != 0
+        if sk.get("metadata", {}).get("activation", {}).get("max_context_tokens", 0) > 0
     ]
     if not skills:
         return []
@@ -880,7 +880,7 @@ def should_invalidate_plan(user_message, current_plan, goal):
     return False
 
 
-def run_decomposition_loop(subtasks, original_goal, actions, config, state):
+def run_decomposition_loop(subtasks, original_goal, actions, config, state, resume_context=None):
     """Execute a decomposed plan by running each subtask in sequence.
 
     Subtask run_loop calls use _suppress_transitions to prevent state machine
@@ -888,12 +888,22 @@ def run_decomposition_loop(subtasks, original_goal, actions, config, state):
     each try to transition). The decomposition loop itself manages the single
     overall transition. All _do_transition calls within this function are
     wrapped in try/except for safety.
+
+    resume_context: optional message list injected by the caller (gate resume path).
+    When provided, it is forwarded only to the first subtask so the gate result
+    reaches the paused subtask instead of being silently dropped.
     """
     subtask_config = dict(config)
     subtask_config["decomposition_depth"] = config.get("decomposition_depth", 0) + 1
     subtask_config["_suppress_transitions"] = True
     subtask_config["step_count"] = 0
 
+    old_doc_id = state.pop("active_plan_doc_id", None)
+    if old_doc_id:
+        try:
+            __record_skill_usage__(old_doc_id, True)
+        except Exception:
+            pass
     decomp_plan_doc_id = __save_plan_doc__(original_goal, subtasks, True)
     if decomp_plan_doc_id:
         state["active_plan_doc_id"] = decomp_plan_doc_id
@@ -908,8 +918,11 @@ def run_decomposition_loop(subtasks, original_goal, actions, config, state):
                 last_resp = encoded[:max_bytes].decode("utf-8", errors="ignore")
             subtask_state["_context_from_parent"] = last_resp
 
+        ctx = resume_context if subtask_idx == 0 and resume_context else []
+        resume_context = None
+
         try:
-            subtask_result = run_loop([], subtask, actions, subtask_state, subtask_config)
+            subtask_result = run_loop(ctx, subtask, actions, subtask_state, subtask_config)
         except Exception as exc:
             try:
                 _do_transition("failed", "subtask exception: " + str(exc), config)
@@ -928,7 +941,18 @@ def run_decomposition_loop(subtasks, original_goal, actions, config, state):
             state["_decomp_subtask_idx"] = subtask_idx
             state["_decomp_subtasks"] = subtasks
             state["_decomp_original_goal"] = original_goal
-            return subtask_result
+            try:
+                __save_checkpoint__(state, {
+                    "decomp_paused": True,
+                    "decomp_subtask_idx": subtask_idx,
+                })
+            except Exception:
+                pass
+            try:
+                _do_transition("waiting", "decomp " + subtask_outcome + " at subtask " + str(subtask_idx), config)
+            except Exception:
+                pass
+            return {**subtask_result, "state": state}
         if subtask_outcome not in ("completed",):
             try:
                 _do_transition("failed", "subtask failed: " + subtask, config)
@@ -960,7 +984,7 @@ def run_planning_phase(goal, actions, config, state):
     if is_trivial(goal, config):
         return (["Complete the task: " + goal], "trivial", None)
 
-    docs = __retrieve_docs__(goal, 5)
+    docs = __retrieve_docs__(goal, 5) or []
 
     template = find_plan_template(docs, goal)
     if template:
@@ -969,7 +993,7 @@ def run_planning_phase(goal, actions, config, state):
             state["active_plan_doc_id"] = plan_doc_id
         return (template["steps"], "template", docs)
 
-    threshold = config.get("plan_confidence_threshold", 0.6)
+    threshold = float(config.get("plan_confidence_threshold", 0.6))
     cached = find_cached_plan(docs, goal)
     if cached and cached.get("confidence", 0.0) >= threshold:
         if cached.get("is_decomposition"):
@@ -1098,7 +1122,8 @@ def run_loop(context, goal, actions, state, config):
         original_goal_decomp = state.pop("_decomp_original_goal", goal)
         remaining = remaining_subtasks[remaining_idx:]
         if remaining:
-            return run_decomposition_loop(remaining, original_goal_decomp, actions, config, state)
+            return run_decomposition_loop(remaining, original_goal_decomp, actions, config, state,
+                                          resume_context=context)
         _do_transition("completed", "decomposition completed on resume", config)
         _write_last_response(state, working_messages)
         return complete_result(state, "completed")
@@ -1127,6 +1152,7 @@ def run_loop(context, goal, actions, state, config):
         state.setdefault("plan_current_step", 0)
 
     cached_tool_schemas = []
+    needs_context_reinit = False
     for step in range(step_count, max_iterations):
         # 1. Check signals
         signal = __check_signals__()
@@ -1152,6 +1178,7 @@ def run_loop(context, goal, actions, state, config):
                 else:
                     state["plan_steps"] = new_steps
                     state["plan_current_step"] = 0
+                    needs_context_reinit = True
                 goal = injected_text
             append_message(working_messages, "User", injected_text)
             # Enable obligation if follow-up message signals execution intent.
@@ -1177,9 +1204,9 @@ def run_loop(context, goal, actions, state, config):
             _write_last_response(state, working_messages)
             return complete_result(state, "completed", "Cost budget exhausted.")
 
-        # 3. Inject prior knowledge and activate skills on first step
-        if step == 0:
-            docs = plan_docs if plan_docs is not None else __retrieve_docs__(goal, 5)
+        # 3. Inject prior knowledge and activate skills on first step (or after goal change)
+        if step == 0 or needs_context_reinit:
+            docs = plan_docs if plan_docs is not None else (__retrieve_docs__(goal, 5) or [])
 
             all_skills = __list_skills__()
             explicit_skills, _rewritten_goal, missing_explicit_skills = extract_explicit_skills(all_skills, goal)
@@ -1295,6 +1322,7 @@ def run_loop(context, goal, actions, state, config):
                     + ". Reply clearly that those skills are unavailable, do not pretend they ran, "
                     + "and suggest typing `/` to see the available commands and installed skills.",
                 )
+            needs_context_reinit = False
 
         # 3.5 Compact context before the next model call when needed.
         try:

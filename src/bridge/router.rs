@@ -1575,10 +1575,11 @@ pub async fn init_engine(agent: &Agent) -> Result<(), Error> {
 
     debug!("engine: initializing engine state");
 
+    let platform_info = agent.platform_info().await;
     let llm_adapter = Arc::new(LlmBridgeAdapter::new(
         agent.llm().clone(),
         Some(agent.cheap_llm().clone()),
-    ));
+    ).with_platform_info(platform_info));
 
     let effect_adapter = Arc::new(
         EffectBridgeAdapter::new(

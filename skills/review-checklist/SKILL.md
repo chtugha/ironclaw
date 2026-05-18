@@ -13,7 +13,7 @@ activation:
     - checklist
     - merge
     - pre-merge
-  max_context_tokens: 128
+  max_context_tokens: 256
 ---
 
 # Pre-Merge Checklist

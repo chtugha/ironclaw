@@ -18,7 +18,7 @@ activation:
   tags:
     - "calendar"
     - "local"
-  max_context_tokens: 256
+  max_context_tokens: 320
 ---
 
 # CalDAV Calendar

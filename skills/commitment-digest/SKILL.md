@@ -16,7 +16,7 @@ activation:
     - "(?i)(morning|daily).*(brief|digest|summary)"
   tags:
     - commitments
-  max_context_tokens: 128
+  max_context_tokens: 256
 ---
 
 # Commitment Digest

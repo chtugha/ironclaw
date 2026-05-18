@@ -17,7 +17,7 @@ activation:
     - "(?i)I (create|write|produce) (content|articles|posts)"
   tags:
     - content
-  max_context_tokens: 128
+  max_context_tokens: 256
 ---
 
 # Content Creator Setup

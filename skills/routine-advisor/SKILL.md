@@ -26,7 +26,7 @@ activation:
     - scheduling
     - personal-assistant
     - productivity
-  max_context_tokens: 128
+  max_context_tokens: 320
 ---
 
 # Routine Advisor

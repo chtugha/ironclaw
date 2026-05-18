@@ -12,7 +12,7 @@ activation:
   tags:
     - "git"
     - "version-control"
-  max_context_tokens: 128
+  max_context_tokens: 192
 ---
 
 # Git Commit

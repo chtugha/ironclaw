@@ -16,7 +16,7 @@ activation:
     - "test.*local"
     - "docker.*test"
     - "spin.*up.*test"
-  max_context_tokens: 256
+  max_context_tokens: 384
 ---
 
 # Local Testing

@@ -32,7 +32,7 @@ activation:
   tags:
     - "development"
     - "coding"
-  max_context_tokens: 256
+  max_context_tokens: 384
 ---
 
 # Coding Best Practices

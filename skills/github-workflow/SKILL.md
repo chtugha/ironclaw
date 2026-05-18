@@ -19,7 +19,7 @@ activation:
     - github
     - automation
     - workflow
-  max_context_tokens: 256
+  max_context_tokens: 384
 requires:
   env:
     - GITHUB_TOKEN

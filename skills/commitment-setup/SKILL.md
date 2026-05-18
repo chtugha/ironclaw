@@ -15,7 +15,7 @@ activation:
     - "(?i)I want to track (my )?(commitments|obligations|tasks)"
   tags:
     - commitments
-  max_context_tokens: 128
+  max_context_tokens: 320
 requires:
   skills:
     - commitment-triage

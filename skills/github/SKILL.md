@@ -18,7 +18,7 @@ activation:
     - "git"
     - "code-review"
     - "devops"
-  max_context_tokens: 256
+  max_context_tokens: 512
 requires:
   env:
     - GITHUB_TOKEN

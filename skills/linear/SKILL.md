@@ -22,7 +22,7 @@ activation:
   tags:
     - "project-management"
     - "issue-tracking"
-  max_context_tokens: 256
+  max_context_tokens: 512
 requires:
   env:
     - LINEAR_API_KEY

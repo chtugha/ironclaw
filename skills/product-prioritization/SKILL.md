@@ -21,7 +21,7 @@ activation:
     - product
     - strategy
     - prioritization
-  max_context_tokens: 256
+  max_context_tokens: 448
 ---
 
 # Product Prioritization

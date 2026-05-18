@@ -30,7 +30,7 @@ activation:
   tags:
     - commitments
     - decision-making
-  max_context_tokens: 128
+  max_context_tokens: 320
 ---
 
 # Decision Capture

@@ -13,7 +13,7 @@ activation:
   patterns:
     - "test.*web.*ui"
     - "test.*browser"
-  max_context_tokens: 128
+  max_context_tokens: 256
 ---
 
 # Web UI Testing

@@ -21,7 +21,7 @@ activation:
     - "web"
     - "browser"
     - "search"
-  max_context_tokens: 256
+  max_context_tokens: 320
 ---
 
 # Web Browse

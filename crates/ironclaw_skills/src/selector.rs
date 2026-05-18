@@ -71,7 +71,7 @@ fn skill_token_cost(skill: &LoadedSkill) -> usize {
     let declared_tokens = skill.manifest.activation.max_context_tokens;
     // Rough token estimate: ~0.25 tokens per byte (~4 bytes per token for English prose)
     let approx_tokens = (skill.prompt_content.len() as f64 * 0.25) as usize;
-    let raw_cost = if approx_tokens > declared_tokens * 2 {
+    let raw_cost = if approx_tokens > (declared_tokens as f64 * 1.2) as usize {
         tracing::warn!(
             "Skill '{}' declares max_context_tokens={} but prompt is ~{} tokens; using actual estimate",
             skill.name(),

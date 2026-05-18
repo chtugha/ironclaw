@@ -360,7 +360,7 @@ impl ThreadManager {
         let retrieval = crate::memory::RetrievalEngine::new(store_for_retrieval);
 
         let gate_controller = self.gate_controller.read().await.clone();
-        let exec_loop = ExecutionLoop::new(
+        let mut exec_loop = ExecutionLoop::new(
             thread,
             llm,
             effects,
@@ -374,6 +374,10 @@ impl ThreadManager {
         .with_event_tx(self.event_tx.clone())
         .with_retrieval(retrieval)
         .with_store(Arc::clone(&self.store));
+
+        if let Some(info) = self.llm.platform_info() {
+            exec_loop = exec_loop.with_platform_info(info);
+        }
 
         // Spawn background task
         let store_for_task = Arc::clone(&self.store);

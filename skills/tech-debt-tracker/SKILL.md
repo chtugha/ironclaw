@@ -25,7 +25,7 @@ activation:
     - commitments
     - developer
     - tech-debt
-  max_context_tokens: 128
+  max_context_tokens: 320
 ---
 
 # Tech Debt Tracker

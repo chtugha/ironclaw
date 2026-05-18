@@ -17,7 +17,7 @@ activation:
     - planning
     - autonomous
     - task-management
-  max_context_tokens: 256
+  max_context_tokens: 384
 ---
 
 # Plan Mode

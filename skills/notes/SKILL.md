@@ -17,7 +17,7 @@ activation:
   tags:
     - "notes"
     - "local"
-  max_context_tokens: 128
+  max_context_tokens: 192
 ---
 
 # Local Notes

@@ -20,7 +20,7 @@ activation:
   tags:
     - commitments
     - delegation
-  max_context_tokens: 128
+  max_context_tokens: 256
 ---
 
 # Delegation Tracker

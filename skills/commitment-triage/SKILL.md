@@ -16,7 +16,7 @@ activation:
     - "(?i)(check|review) (my )?(tasks|delegations|commitments)"
   tags:
     - commitments
-  max_context_tokens: 128
+  max_context_tokens: 256
 ---
 
 # Commitment Triage

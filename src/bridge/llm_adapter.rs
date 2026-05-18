@@ -73,6 +73,7 @@ pub struct LlmBridgeAdapter {
     provider: Arc<dyn LlmProvider>,
     /// Optional cheaper provider for sub-calls (depth > 0).
     cheap_provider: Option<Arc<dyn LlmProvider>>,
+    platform_info: Option<ironclaw_engine::PlatformInfo>,
 }
 
 impl LlmBridgeAdapter {
@@ -83,7 +84,13 @@ impl LlmBridgeAdapter {
         Self {
             provider,
             cheap_provider,
+            platform_info: None,
         }
+    }
+
+    pub fn with_platform_info(mut self, info: ironclaw_engine::PlatformInfo) -> Self {
+        self.platform_info = Some(info);
+        self
     }
 
     fn provider_for_depth(&self, depth: u32) -> &Arc<dyn LlmProvider> {
@@ -267,6 +274,10 @@ impl LlmBackend for LlmBridgeAdapter {
 
     fn model_name(&self) -> &str {
         self.provider.model_name()
+    }
+
+    fn platform_info(&self) -> Option<ironclaw_engine::PlatformInfo> {
+        self.platform_info.clone()
     }
 }
 

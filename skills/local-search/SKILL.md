@@ -16,7 +16,7 @@ activation:
   tags:
     - "search"
     - "local"
-  max_context_tokens: 128
+  max_context_tokens: 256
 ---
 
 # Local File Search

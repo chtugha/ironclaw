@@ -20,7 +20,7 @@ activation:
     - personal-assistant
     - task-management
     - delegation
-  max_context_tokens: 128
+  max_context_tokens: 256
 ---
 
 # Task Delegation

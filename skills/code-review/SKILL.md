@@ -14,7 +14,7 @@ activation:
     - "code-review"
     - "quality"
     - "security"
-  max_context_tokens: 128
+  max_context_tokens: 256
 ---
 
 # Code Review

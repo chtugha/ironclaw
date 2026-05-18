@@ -17,7 +17,7 @@ activation:
     - "(?i)help me (manage|track|organize) (my )?(code|repos|PRs)"
   tags:
     - developer
-  max_context_tokens: 128
+  max_context_tokens: 320
 requires:
   skills:
     - code-review

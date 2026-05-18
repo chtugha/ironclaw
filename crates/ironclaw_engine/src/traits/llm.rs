@@ -60,4 +60,9 @@ pub trait LlmBackend: Send + Sync {
 
     /// The model identifier (e.g. "gpt-4", "claude-opus-4-20250514").
     fn model_name(&self) -> &str;
+
+    /// Get platform identity and metadata for system prompts.
+    fn platform_info(&self) -> Option<crate::executor::prompt::PlatformInfo> {
+        None
+    }
 }

@@ -16,7 +16,7 @@ activation:
     - "(?i)help me manage my (day|schedule|team)"
   tags:
     - commitments
-  max_context_tokens: 128
+  max_context_tokens: 320
 requires:
   skills:
     - commitment-triage

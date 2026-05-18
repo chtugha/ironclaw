@@ -18,7 +18,7 @@ activation:
     - developer
     - review
     - process
-  max_context_tokens: 128
+  max_context_tokens: 256
 ---
 
 # Review Readiness
