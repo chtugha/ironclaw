@@ -2450,8 +2450,12 @@ async fn process_mission_outcome_and_notify(
                 }
             }
 
-            // Record approach (full response — LLM output is never truncated)
             mission.approach_history.push(text.clone());
+            const MAX_APPROACH_HISTORY: usize = 50;
+            if mission.approach_history.len() > MAX_APPROACH_HISTORY {
+                let excess = mission.approach_history.len() - MAX_APPROACH_HISTORY;
+                mission.approach_history.drain(..excess);
+            }
             notify_response = Some(text.clone());
 
             // If this is a self-improvement mission, process structured output

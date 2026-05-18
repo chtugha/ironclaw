@@ -151,9 +151,18 @@ pub fn build_codeact_system_prompt_with_docs(
     compact_actions: &[ActionDef],
     system_docs: &[crate::types::memory::MemoryDoc],
     platform: Option<&PlatformInfo>,
+    plan_anchor: Option<&str>,
 ) -> String {
     let overlay = extract_prompt_overlay(system_docs);
-    build_codeact_system_prompt_inner(capabilities, compact_actions, overlay.as_deref(), platform)
+    let mut prompt =
+        build_codeact_system_prompt_inner(capabilities, compact_actions, overlay.as_deref(), platform);
+    if let Some(anchor) = plan_anchor
+        && !anchor.is_empty()
+    {
+        prompt.push_str("\n\n");
+        prompt.push_str(anchor);
+    }
+    prompt
 }
 
 /// Shared prompt builder used by both the async and pre-fetched-docs variants.
@@ -326,6 +335,8 @@ fn is_legacy_codeact_system_prompt(content: &str) -> bool {
             || content.contains(CODEACT_CAPABILITIES_HEADING))
 }
 
+const PLAN_ANCHOR_HEADING: &str = "## Current Plan";
+
 fn codeact_system_prompt_suffix(existing_content: &str) -> Option<&str> {
     let append_markers = [
         PRIOR_KNOWLEDGE_HEADING,
@@ -343,7 +354,15 @@ fn codeact_system_prompt_suffix(existing_content: &str) -> Option<&str> {
                 .map(|idx| idx + CODEACT_POSTAMBLE.len())
         })?;
 
-    existing_content.get(suffix_start..)
+    let suffix = existing_content.get(suffix_start..)?;
+    if let Some(plan_pos) = suffix.find(PLAN_ANCHOR_HEADING) {
+        let trimmed = &suffix[..plan_pos];
+        if trimmed.trim().is_empty() {
+            return None;
+        }
+        return Some(trimmed);
+    }
+    Some(suffix)
 }
 
 const fn capability_status_label(status: CapabilityStatus) -> &'static str {
@@ -418,7 +437,9 @@ fn compact_prompt_description(description: &str) -> String {
     if words.len() <= MAX_WORDS {
         words.join(" ")
     } else {
-        words[..MAX_WORDS].join(" ")
+        let mut truncated = words[..MAX_WORDS].join(" ");
+        truncated.push_str(" [...]");
+        truncated
     }
 }
 
@@ -651,6 +672,7 @@ mod tests {
             &[],
             &[],
             None,
+            None,
         );
 
         assert!(prompt.contains("## Capabilities"));
@@ -698,6 +720,7 @@ mod tests {
             ],
             &[],
             None,
+            None,
         );
 
         assert!(prompt.contains("## Enabled Tools"));
@@ -714,7 +737,7 @@ mod tests {
 
     #[test]
     fn prompt_no_longer_duplicates_callable_tool_inventory() {
-        let prompt = build_codeact_system_prompt_with_docs(&[], &[], &[], None);
+        let prompt = build_codeact_system_prompt_with_docs(&[], &[], &[], None, None);
 
         assert!(!prompt.contains("## Available tools (call as Python functions)"));
         assert!(!prompt.contains("`message(text)`"));
@@ -722,7 +745,7 @@ mod tests {
 
     #[test]
     fn prompt_keeps_callable_tools_out_of_extra_prompt_sections() {
-        let prompt = build_codeact_system_prompt_with_docs(&[], &[], &[], None);
+        let prompt = build_codeact_system_prompt_with_docs(&[], &[], &[], None, None);
 
         assert!(!prompt.contains("## Lookup-only tools"));
         assert!(!prompt.contains("## Deferred large tools"));
@@ -733,7 +756,7 @@ mod tests {
 
     #[test]
     fn upsert_replaces_engine_owned_system_prompt() {
-        let old_prompt = build_codeact_system_prompt_with_docs(&[], &[], &[], None);
+        let old_prompt = build_codeact_system_prompt_with_docs(&[], &[], &[], None, None);
         let new_prompt = build_codeact_system_prompt_with_docs(
             &[CapabilitySummary {
                 name: "telegram".into(),
@@ -746,6 +769,7 @@ mod tests {
             }],
             &[],
             &[],
+            None,
             None,
         );
         let mut messages = vec![ThreadMessage::system(old_prompt), ThreadMessage::user("hi")];
@@ -761,7 +785,7 @@ mod tests {
 
     #[test]
     fn refresh_preserves_step_zero_system_appends() {
-        let old_prompt = build_codeact_system_prompt_with_docs(&[], &[], &[], None);
+        let old_prompt = build_codeact_system_prompt_with_docs(&[], &[], &[], None, None);
         let existing = format!(
             "{old_prompt}\n\n## Prior Knowledge (from completed threads)\n\n### [LESSON] Use http\n\n<skill name=\"github\" version=\"1\">\nGitHub API Skill\n</skill>\n\nThe user explicitly requested slash skill(s) that are not installed."
         );
@@ -778,6 +802,7 @@ mod tests {
             &[],
             &[],
             None,
+            None,
         );
 
         let refreshed = refresh_codeact_system_prompt(&existing, &new_prompt);
@@ -792,7 +817,7 @@ mod tests {
         let legacy_prompt = format!(
             "{CODEACT_LEGACY_OPENING}\n\nLegacy prompt body.\n\n```repl\nprint('hi')\n```\n{CODEACT_STRATEGY_HEADING}\nLegacy strategy text.\n"
         );
-        let new_prompt = build_codeact_system_prompt_with_docs(&[], &[], &[], None);
+        let new_prompt = build_codeact_system_prompt_with_docs(&[], &[], &[], None, None);
         let mut messages = vec![
             ThreadMessage::system(legacy_prompt),
             ThreadMessage::user("resume me"),
@@ -822,6 +847,7 @@ mod tests {
             }],
             &[],
             &[],
+            None,
             None,
         );
 

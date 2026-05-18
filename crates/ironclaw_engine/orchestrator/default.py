@@ -35,8 +35,9 @@ import re
 
 
 def _token_count(text):
-    """Byte-based token approximation: 1 token ≈ 4 UTF-8 bytes."""
-    return int(len(text.encode("utf-8")) * 0.25)
+    if not text:
+        return 0
+    return max(1, int(len(text.encode("utf-8")) * 0.25))
 
 
 def _do_transition(target, reason, config=None):
@@ -887,10 +888,13 @@ def should_invalidate_plan(user_message, current_plan, goal):
         return False
     lower = user_message.lower().strip()
     prefixes = [
-        "instead ", "forget ", "stop ", "cancel ", "actually ",
-        "new task", "switch to",
+        "instead ", "forget the plan", "forget about", "cancel the ",
+        "cancel this", "new task", "switch to",
     ]
-    phrases = ["do this instead", "change of plan", "never mind", "start over"]
+    phrases = [
+        "do this instead", "change of plan", "never mind", "start over",
+        "stop everything", "actually, do ", "actually do ",
+    ]
     for p in prefixes:
         if lower.startswith(p):
             return True
@@ -918,12 +922,7 @@ def run_decomposition_loop(subtasks, original_goal, actions, config, state, resu
     subtask_config["_suppress_transitions"] = True
     subtask_config["step_count"] = 0
 
-    old_doc_id = state.pop("active_plan_doc_id", None)
-    if old_doc_id:
-        try:
-            __record_skill_usage__(old_doc_id, True)
-        except Exception:
-            pass
+    prior_plan_doc_id = state.pop("active_plan_doc_id", None)
     decomp_plan_doc_id = __save_plan_doc__(original_goal, subtasks, True)
     if decomp_plan_doc_id:
         state["active_plan_doc_id"] = decomp_plan_doc_id
@@ -974,6 +973,12 @@ def run_decomposition_loop(subtasks, original_goal, actions, config, state, resu
                 pass
             return {**subtask_result, "state": state}
         if subtask_outcome not in ("completed",):
+            for doc_id in (decomp_plan_doc_id, prior_plan_doc_id):
+                if doc_id:
+                    try:
+                        __record_skill_usage__(doc_id, False)
+                    except Exception:
+                        pass
             try:
                 _do_transition("failed", "subtask failed: " + subtask, config)
             except Exception:
@@ -983,6 +988,12 @@ def run_decomposition_loop(subtasks, original_goal, actions, config, state, resu
         if subtask_result.get("response"):
             state["_last_response"] = str(subtask_result["response"])[:800]
 
+    for doc_id in (decomp_plan_doc_id, prior_plan_doc_id):
+        if doc_id:
+            try:
+                __record_skill_usage__(doc_id, True)
+            except Exception:
+                pass
     try:
         _do_transition("completed", "all subtasks completed", config)
     except Exception:
@@ -1017,6 +1028,9 @@ def run_planning_phase(goal, actions, config, state):
     cached = find_cached_plan(docs, goal)
     if cached and cached.get("confidence", 0.0) >= threshold:
         if cached.get("is_decomposition"):
+            plan_doc_id = cached.get("doc_id")
+            if plan_doc_id:
+                state["active_plan_doc_id"] = plan_doc_id
             if config.get("decomposition_depth", 0) >= 1:
                 return (cached["steps"], "cached", docs)
             return (cached["steps"], "decompose", docs)
@@ -1037,7 +1051,7 @@ def run_planning_phase(goal, actions, config, state):
 
     subtasks = run_miniplan_call(goal)
     if subtasks is None:
-        return (["Complete the task: " + goal], "llm", docs)
+        return (["Complete the task: " + goal], "failed", docs)
 
     return (subtasks, "decompose", docs)
 
@@ -1161,17 +1175,21 @@ def run_loop(context, goal, actions, state, config):
         state.setdefault("plan_current_step", 0)
     else:
         plan_steps, plan_source, plan_docs = run_planning_phase(goal, actions, config, state)
-        if plan_source == "failed":
-            _do_transition("failed", "planning failed", config)
-            _write_last_response(state, working_messages)
-            return complete_result(state, "failed", error="Could not generate a plan for the given goal.")
         if plan_source == "decompose":
             _write_last_response(state, working_messages)
             return run_decomposition_loop(plan_steps, goal, actions, config, state)
         state["plan_steps"] = plan_steps
         state.setdefault("plan_current_step", 0)
 
-    cached_tool_schemas = []
+    cached_tool_schemas = [
+        {
+            "name": a.get("name", ""),
+            "content": a.get("description", ""),
+            "score": 1.0,
+            "type": "tool",
+        }
+        for a in actions
+    ] if actions else []
     needs_context_reinit = False
     for step in range(step_count, max_iterations):
         # 1. Check signals
@@ -1188,11 +1206,7 @@ def run_loop(context, goal, actions, state, config):
                 state.pop("plan_current_step", None)
                 state.pop("active_plan_doc_id", None)
                 new_steps, new_source, _ = run_planning_phase(injected_text, actions, config, state)
-                if new_source == "failed":
-                    _write_last_response(state, working_messages)
-                    _do_transition("failed", "re-planning failed after goal change", config)
-                    return complete_result(state, "failed", error="Could not re-plan for the updated goal.")
-                elif new_source == "decompose":
+                if new_source == "decompose":
                     _write_last_response(state, working_messages)
                     return run_decomposition_loop(new_steps, injected_text, actions, config, state)
                 else:
@@ -1500,6 +1514,7 @@ def run_loop(context, goal, actions, state, config):
             if gate is None:
                 gate = result.get("need_approval")
             if gate is not None and isinstance(gate, dict) and gate.get("gate_paused"):
+                _write_last_response(state, working_messages)
                 __save_checkpoint__(state, {
                     "nudge_count": consecutive_nudges,
                     "consecutive_errors": consecutive_errors,
@@ -1518,9 +1533,9 @@ def run_loop(context, goal, actions, state, config):
                     "resume_kind": gate.get("resume_kind", {}),
                 }
 
-            # Check for approval or authentication needed (legacy path)
             if result.get("need_approval") is not None:
                 approval = result["need_approval"]
+                _write_last_response(state, working_messages)
                 __save_checkpoint__(state, {
                     "nudge_count": consecutive_nudges,
                     "consecutive_errors": consecutive_errors,
@@ -1663,7 +1678,7 @@ def run_loop(context, goal, actions, state, config):
                     continue
 
                 if r.get("gate_paused"):
-                    # Unified gate pause (replaces separate need_approval/need_authentication)
+                    _write_last_response(state, working_messages)
                     __save_checkpoint__(state, {
                         "nudge_count": consecutive_nudges,
                         "consecutive_errors": consecutive_errors,
@@ -1672,7 +1687,6 @@ def run_loop(context, goal, actions, state, config):
                         "obligation_nudge_count": state.get("_obligation_nudge_count", 0),
                     })
                     gate = r
-                    # Get action info from the original call or the result
                     orig_call = executable_calls[r_idx] if r_idx < len(executable_calls) else {}
                     _do_transition("waiting", "gate paused: " + gate.get("gate_name", "unknown"), config)
                     return {
@@ -1686,6 +1700,7 @@ def run_loop(context, goal, actions, state, config):
                     }
 
                 if r.get("need_authentication"):
+                    _write_last_response(state, working_messages)
                     __save_checkpoint__(state, {
                         "nudge_count": consecutive_nudges,
                         "consecutive_errors": consecutive_errors,
@@ -1704,6 +1719,7 @@ def run_loop(context, goal, actions, state, config):
                     }
 
                 if r.get("need_approval"):
+                    _write_last_response(state, working_messages)
                     __save_checkpoint__(state, {
                         "nudge_count": consecutive_nudges,
                         "consecutive_errors": consecutive_errors,

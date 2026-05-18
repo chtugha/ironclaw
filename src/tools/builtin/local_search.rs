@@ -151,10 +151,12 @@ impl Tool for LocalSearchTool {
 
         let search_path = if scope == "global" {
             let raw = PathBuf::from(path_str);
-            match std::fs::canonicalize(&raw) {
-                Ok(canonical) => canonical,
-                Err(_) => raw,
-            }
+            std::fs::canonicalize(&raw).map_err(|e| {
+                ToolError::InvalidParameters(format!(
+                    "Cannot resolve path '{}': {}",
+                    path_str, e
+                ))
+            })?
         } else {
             let base = self.base_dir.clone().unwrap_or_else(|| {
                 std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."))
@@ -179,11 +181,17 @@ impl Tool for LocalSearchTool {
             cmd.env(key, val);
         }
 
+        cmd.arg("--no-config");
+        cmd.env("RIPGREP_CONFIG_PATH", "");
         cmd.arg("--color").arg("never");
         cmd.arg("--no-heading");
         cmd.arg("--glob").arg("!.git");
         cmd.arg("--glob").arg("!node_modules");
         cmd.arg("--glob").arg("!target");
+        cmd.arg("--glob").arg("!.env");
+        cmd.arg("--glob").arg("!.env.*");
+        cmd.arg("--glob").arg("!.npmrc");
+        cmd.arg("--glob").arg("!.netrc");
 
         match output_mode {
             "files_with_matches" => {
@@ -207,6 +215,14 @@ impl Tool for LocalSearchTool {
             cmd.arg("-i");
         }
         if let Some(g) = glob_filter {
+            let g_lower = g.to_lowercase();
+            if (g_lower.contains(".git") || g_lower.contains("node_modules") || g_lower.contains("target"))
+                && !g.starts_with('!')
+            {
+                return Err(ToolError::InvalidParameters(
+                    "Glob pattern must not re-include excluded directories (.git, node_modules, target).".to_string()
+                ));
+            }
             cmd.arg("--glob").arg(g);
         }
 

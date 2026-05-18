@@ -1,37 +1,63 @@
 use crate::tools::tool::ToolError;
 
-const FILE_URL_PREFIX: &str = "file://";
-
 const BLOCK_MSG: &str =
     "file:// URLs are blocked for security. Use the local_search tool for filesystem access.";
 
-/// Strip ASCII control characters (`\t`, `\n`, `\r`) and leading/trailing
-/// whitespace from a URL string.  WHATWG-compliant parsers (used by browsers,
-/// `reqwest`, Node.js `fetch`) silently remove these characters anywhere inside
-/// a URL, so `"f\nile:///etc/passwd"` reaches the HTTP client as
-/// `"file:///etc/passwd"` even though the raw string doesn't start with
-/// `file://`.  Normalising before the prefix check closes this bypass.
-#[inline]
+const DATA_BLOCK_MSG: &str =
+    "data: URLs are blocked for security.";
+
+const BLOCKED_SCHEME_MSG: &str =
+    "This URL scheme is blocked for security.";
+
+const BLOCKED_SCHEMES: &[&str] = &[
+    "file:", "data:", "javascript:", "vbscript:",
+    "ftp:", "sftp:", "gopher:", "dict:", "ldap:",
+];
+
 fn strip_url_noise(s: &str) -> String {
     let cleaned: String = s
         .chars()
-        .filter(|c| !matches!(c, '\t' | '\n' | '\r'))
+        .filter(|c| {
+            let cp = *c as u32;
+            !(cp <= 0x1F || cp == 0x7F || cp == 0xFEFF
+                || cp == 0x00A0 || cp == 0x2028 || cp == 0x2029)
+        })
         .collect();
     cleaned.trim().to_string()
 }
 
-#[inline]
-fn is_file_url(s: &str) -> bool {
-    let s = strip_url_noise(s);
-    if s.len() >= FILE_URL_PREFIX.len()
-        && s.as_bytes()[..FILE_URL_PREFIX.len()].eq_ignore_ascii_case(FILE_URL_PREFIX.as_bytes())
-    {
-        return true;
+fn normalize_slashes(s: &str) -> String {
+    s.replace('\\', "/")
+}
+
+fn fully_percent_decode(s: &str) -> String {
+    let mut cur = s.to_string();
+    for _ in 0..5 {
+        let next = percent_decode(&cur);
+        if next == cur {
+            break;
+        }
+        cur = next;
     }
-    let decoded = percent_decode(&s);
-    decoded.len() >= FILE_URL_PREFIX.len()
-        && decoded.as_bytes()[..FILE_URL_PREFIX.len()]
-            .eq_ignore_ascii_case(FILE_URL_PREFIX.as_bytes())
+    cur
+}
+
+fn is_blocked_scheme(s: &str) -> Option<&'static str> {
+    let cleaned = strip_url_noise(s);
+    let normalized = normalize_slashes(&cleaned);
+    for check in [&normalized, &fully_percent_decode(&normalized)] {
+        let lower = check.to_ascii_lowercase();
+        for &scheme in BLOCKED_SCHEMES {
+            if lower.starts_with(scheme) {
+                return match scheme {
+                    "file:" => Some(BLOCK_MSG),
+                    "data:" => Some(DATA_BLOCK_MSG),
+                    _ => Some(BLOCKED_SCHEME_MSG),
+                };
+            }
+        }
+    }
+    None
 }
 
 fn percent_decode(s: &str) -> String {
@@ -62,22 +88,18 @@ fn hex_val(b: u8) -> Option<u8> {
     }
 }
 
-/// Recursively walk a JSON value and return the first `file://` string found.
-fn find_file_url(value: &serde_json::Value) -> Option<&str> {
+fn find_blocked_url(value: &serde_json::Value) -> Option<&'static str> {
     match value {
-        serde_json::Value::String(s) if is_file_url(s) => Some(s.as_str()),
-        serde_json::Value::Array(arr) => arr.iter().find_map(find_file_url),
-        serde_json::Value::Object(map) => map.values().find_map(find_file_url),
+        serde_json::Value::String(s) => is_blocked_scheme(s),
+        serde_json::Value::Array(arr) => arr.iter().find_map(find_blocked_url),
+        serde_json::Value::Object(map) => map.values().find_map(find_blocked_url),
         _ => None,
     }
 }
 
-/// Inspect `params` for any `file://` URL in any string field (at any nesting
-/// depth). Returns `Err(ToolError::InvalidParameters)` with a user-facing message
-/// if one is found, otherwise returns `Ok(())`.
 pub fn reject_if_file_url(params: &serde_json::Value) -> Result<(), ToolError> {
-    if find_file_url(params).is_some() {
-        return Err(ToolError::InvalidParameters(BLOCK_MSG.to_string()));
+    if let Some(msg) = find_blocked_url(params) {
+        return Err(ToolError::InvalidParameters(msg.to_string()));
     }
     Ok(())
 }
@@ -141,6 +163,39 @@ mod tests {
     }
 
     #[test]
+    fn file_url_single_slash_is_rejected() {
+        let params = json!({"url": "file:/etc/passwd"});
+        assert!(reject_if_file_url(&params).is_err());
+
+        let params = json!({"url": "file:etc/passwd"});
+        assert!(reject_if_file_url(&params).is_err());
+    }
+
+    #[test]
+    fn file_url_backslash_is_rejected() {
+        let params = json!({"url": "file:\\\\\\etc\\passwd"});
+        assert!(reject_if_file_url(&params).is_err());
+
+        let params = json!({"url": "file:%5C%5C%5Cetc%5Cpasswd"});
+        assert!(reject_if_file_url(&params).is_err());
+    }
+
+    #[test]
+    fn data_url_is_rejected() {
+        let params = json!({"url": "data:text/html,<script>alert(1)</script>"});
+        assert!(reject_if_file_url(&params).is_err());
+
+        let params = json!({"url": "DATA:text/plain,hello"});
+        assert!(reject_if_file_url(&params).is_err());
+    }
+
+    #[test]
+    fn javascript_url_is_rejected() {
+        let params = json!({"url": "javascript:alert(1)"});
+        assert!(reject_if_file_url(&params).is_err());
+    }
+
+    #[test]
     fn loopback_url_passes_through() {
         let params = json!({"url": "http://localhost:9222/json"});
         assert!(reject_if_file_url(&params).is_ok());
@@ -200,6 +255,36 @@ mod tests {
         assert!(reject_if_file_url(&params).is_err());
 
         let params = json!({"url": "  file:///etc/hosts"});
+        assert!(reject_if_file_url(&params).is_err());
+    }
+
+    #[test]
+    fn c0_control_prefix_stripped() {
+        let params = json!({"url": "\x01file:///etc/passwd"});
+        assert!(reject_if_file_url(&params).is_err());
+    }
+
+    #[test]
+    fn bom_prefix_does_not_bypass() {
+        let params = json!({"url": "\u{FEFF}file:///etc/passwd"});
+        assert!(reject_if_file_url(&params).is_err());
+    }
+
+    #[test]
+    fn double_percent_encoding_is_rejected() {
+        let params = json!({"url": "%2566ile:///etc/passwd"});
+        assert!(reject_if_file_url(&params).is_err());
+    }
+
+    #[test]
+    fn ftp_url_is_rejected() {
+        let params = json!({"url": "ftp://attacker.com/file"});
+        assert!(reject_if_file_url(&params).is_err());
+    }
+
+    #[test]
+    fn gopher_url_is_rejected() {
+        let params = json!({"url": "gopher://localhost:25/"});
         assert!(reject_if_file_url(&params).is_err());
     }
 

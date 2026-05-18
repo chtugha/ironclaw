@@ -340,14 +340,11 @@ impl ExecutionLoop {
                 &compact_actions,
                 system_docs,
                 self.platform_info.as_ref(),
+                plan_anchor.as_deref(),
             )
         };
 
-        let plan_anchor_text_for_state = if use_tier0 {
-            plan_anchor.as_deref().unwrap_or("").to_string()
-        } else {
-            String::new()
-        };
+        let plan_anchor_text_for_state = plan_anchor.as_deref().unwrap_or("").to_string();
         if let Some(obj) = checkpoint.persisted_state.as_object_mut() {
             obj.insert(
                 "plan_anchor_text".to_string(),

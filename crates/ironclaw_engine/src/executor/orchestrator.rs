@@ -4738,7 +4738,7 @@ mod tests {
         thread.transition_to(ThreadState::Running, None).unwrap();
         thread.messages = vec![
             ThreadMessage::system(
-                crate::executor::prompt::build_codeact_system_prompt_with_docs(&[], &[], &[], None),
+                crate::executor::prompt::build_codeact_system_prompt_with_docs(&[], &[], &[], None, None),
             ),
             ThreadMessage::user("use gmail"),
         ];

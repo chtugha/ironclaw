@@ -14,9 +14,11 @@
 
 use tracing::warn;
 
-/// Byte-based token approximation (mirrors Python `len(text.encode("utf-8")) * 0.25`).
 pub fn token_count(text: &str) -> usize {
-    (text.len() as f64 * 0.25) as usize
+    if text.is_empty() {
+        return 0;
+    }
+    ((text.len() as f64 * 0.25) as usize).max(1)
 }
 
 /// Budget configuration for a single prompt assembly pass.

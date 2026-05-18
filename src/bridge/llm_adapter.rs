@@ -91,14 +91,12 @@ impl LlmBridgeAdapter {
     }
 
     pub fn with_platform_info(self, info: ironclaw_engine::PlatformInfo) -> Self {
-        *self.platform_info.write().unwrap() = Some(info);
+        *self.platform_info.write().unwrap_or_else(|e| e.into_inner()) = Some(info);
         self
     }
 
-    /// Update the platform info for the current agent. Called from the ENGINE_STATE
-    /// fast path so each agent's local/cloud classification is reflected correctly.
     pub fn update_platform_info(&self, info: ironclaw_engine::PlatformInfo) {
-        *self.platform_info.write().unwrap() = Some(info);
+        *self.platform_info.write().unwrap_or_else(|e| e.into_inner()) = Some(info);
     }
 
     fn provider_for_depth(&self, depth: u32) -> &Arc<dyn LlmProvider> {
@@ -285,7 +283,7 @@ impl LlmBackend for LlmBridgeAdapter {
     }
 
     fn platform_info(&self) -> Option<ironclaw_engine::PlatformInfo> {
-        self.platform_info.read().unwrap().clone()
+        self.platform_info.read().unwrap_or_else(|e| e.into_inner()).clone()
     }
 }
 
