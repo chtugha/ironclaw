@@ -1785,6 +1785,17 @@ pub async fn init_engine(agent: &Agent) -> Result<(), Error> {
     };
     mission_manager_inner =
         mission_manager_inner.with_insights_interval(missions_config.insights_interval);
+    {
+        let mission_thread_cfg = ThreadConfig {
+            max_prompt_tokens: agent.config().max_prompt_tokens,
+            skill_token_budget: agent.deps.skills_config.max_context_tokens,
+            plan_confidence_threshold: agent.config().plan_confidence_threshold,
+            codeact_enabled: agent.config().codeact_enabled,
+            ..ThreadConfig::default()
+        };
+        mission_manager_inner =
+            mission_manager_inner.with_default_thread_config(mission_thread_cfg);
+    }
     let mission_manager = Arc::new(mission_manager_inner);
     if let Err(e) = thread_manager.recover_project_threads(project_id).await {
         debug!("engine: recover_project_threads failed: {e}");

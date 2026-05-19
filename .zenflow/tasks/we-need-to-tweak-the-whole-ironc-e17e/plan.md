@@ -527,7 +527,8 @@ Verification steps:
 > These items were identified as architectural improvements that go beyond single-fix scope.
 > Each is tracked as its own step below. REQ and spec references are appended inline.
 
-### [ ] Step 19: Propagate operator-configured ThreadConfig to mission threads
+### [x] Step 19: Propagate operator-configured ThreadConfig to mission threads
+<!-- chat-id: 95e07d90-979e-4e81-99ff-c9837c32d569 -->
 
 Currently, `MissionManager::fire_mission()` uses `ThreadConfig::default()` when spawning mission threads (line 883 of `crates/ironclaw_engine/src/runtime/mission.rs`). This means mission threads always get the hardcoded defaults (`max_prompt_tokens: 8192`, `skill_token_budget: 2048`, `plan_confidence_threshold: 0.6`) regardless of the operator's settings. A user who configures a larger local context window (e.g. for a 70B model) will see mission threads silently truncated at 8192 while foreground threads use the configured value.
 
@@ -541,7 +542,8 @@ Verification:
 - Unit test: `fire_mission` spawns a thread whose `ThreadConfig.max_prompt_tokens` matches the injected config, not the default
 - Integration: configure `max_prompt_tokens = 16384` in settings, fire a mission, verify the spawned thread's config reflects 16384
 
-### [ ] Step 20: Optimize `count_running_threads` to avoid O(N) store round-trips
+### [x] Step 20: Optimize `count_running_threads` to avoid O(N) store round-trips
+<!-- chat-id: 57f25549-343c-4087-ac6d-d57672c28d39 -->
 
 `MissionManager::count_running_threads()` iterates `mission.thread_history` in reverse and calls `self.store.load_thread(tid)` for each entry. For long-running missions that have accumulated hundreds of thread IDs, this performs O(N) store calls on every `fire_mission()` invocation (the `max_concurrent` gate).
 
@@ -572,12 +574,22 @@ Verification:
 
 The current token counting approximation (`len(bytes) * 0.25`) under-estimates token counts for CJK, Arabic, and emoji-heavy text by up to 50–100%. For ASCII-heavy English content the approximation is acceptable, but for multilingual home-use scenarios this creates a real gap where the token guard approves prompts that exceed the actual model's context window.
 
+**Approach — hybrid script detection:**
+- Detect whether the input text contains CJK or Arabic characters (Unicode ranges: CJK Unified Ideographs U+4E00–U+9FFF, CJK Extension A/B, Katakana, Hiragana, Hangul, Arabic U+0600–U+06FF, Arabic Supplement/Extended)
+- If no CJK/Arabic characters are present: keep the existing `len(bytes) * 0.25` approximation (accurate for ASCII/Latin prose)
+- If CJK or Arabic characters are detected: delegate to `tiktoken-rs` (cl100k_base encoding as universal fallback) for an accurate per-token count. Fall back to byte approximation if the library is unavailable or the model is unknown
+
 Changes:
-- Option A (lightweight): Add a `tiktoken-rs` dependency (or equivalent) to `ironclaw_engine`. Expose a `fn accurate_token_count(text: &str, model: &str) -> usize` function. Use it in the token guard's `apply()` function and in the Python `_token_count()` helper (via a new `__count_tokens__` host function). Fall back to the byte-based approximation when the model is unknown
-- Option B (minimal): Change the byte multiplier from `0.25` to `0.33` for a more conservative estimate that better approximates CJK text (3 bytes per char → 1 token per char) at the cost of slight over-counting for ASCII. This is a one-line change but still imprecise
-- Whichever option is chosen, update the Python `_token_count()` in `default.py` and the Rust `token_count()` in `token_guard.rs` to use the same formula
+- Add `tiktoken-rs` (or `tiktoken` crate) as an optional dependency to `ironclaw_engine/Cargo.toml` behind a `tiktoken` feature flag so the crate compiles without it in constrained environments
+- Add `fn has_cjk_or_arabic(text: &str) -> bool` in `token_guard.rs` — scans chars for the Unicode ranges above
+- Update `token_count(text: &str) -> usize` in `token_guard.rs` to call `has_cjk_or_arabic` first and branch accordingly
+- Add a `__count_tokens__` host function in `orchestrator.rs` that calls the Rust `token_count()` and returns the result to Python
+- Update `_token_count(text)` in `default.py` to call `__count_tokens__(text)` so Python and Rust stay in sync; keep the byte-based inline formula as a fallback comment for environments where the host function is unavailable
+- Update the Python `_token_count()` fallback inline formula to also apply the same CJK/Arabic heuristic (use `len(text.encode("utf-8"))` normally; if any char ordinal falls in a CJK/Arabic range use `len(text)` × 1.5 as conservative estimate when `__count_tokens__` is unavailable)
 
 Verification:
-- Unit test: a 100-character CJK string produces a token count within 20% of the expected tokenizer output
-- Unit test: ASCII strings still produce reasonable estimates (within 30% of tiktoken)
-- Constraint C3 in the spec must be updated to reflect the new approach
+- Unit test: `has_cjk_or_arabic` returns `true` for a Chinese sentence, an Arabic sentence, and mixed CJK+Latin; returns `false` for pure ASCII and Latin-1 text
+- Unit test: `token_count` on a 100-character CJK string produces a count within 20% of tiktoken's cl100k_base output
+- Unit test: `token_count` on pure ASCII still uses the byte-based path (verify no tiktoken call via a counter or cfg flag)
+- Unit test: ASCII strings produce estimates within 30% of tiktoken
+- Constraint C3 in the spec must be updated to reflect the hybrid approach
