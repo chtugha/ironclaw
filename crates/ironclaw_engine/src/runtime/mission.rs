@@ -927,6 +927,22 @@ impl MissionManager {
         // path.
         let fire_instant = chrono::Utc::now();
 
+        // Increment the in-memory running-thread counter BEFORE installing the
+        // outcome watcher. The watcher task may execute on a separate OS thread
+        // and could call `decrement_running_count` before we reach the increment
+        // below (especially in tests where MockLlm returns immediately). By
+        // incrementing first we guarantee the counter never goes negative due
+        // to a decrement racing ahead of the increment.
+        //
+        // Guard: only maintain the counter when max_concurrent enforcement is
+        // active (> 0). For unlimited missions the counter is never consulted
+        // and maintaining it would create a phantom balance that confuses
+        // watchers installed by `resume_recoverable_threads` (which never
+        // increment the counter, so their decrements would under-count).
+        if mission.max_concurrent > 0 {
+            *self.running_thread_counts.write().await.entry(id).or_insert(0) += 1;
+        }
+
         // Install the outcome watcher *before* persisting the mission update.
         // The watcher only depends on `thread_id` (it joins via ThreadManager
         // and reloads the mission record itself), so installing it first
@@ -937,13 +953,6 @@ impl MissionManager {
         // this the reconciled value would be the *outcome* time, which can
         // be many seconds-to-hours later for long-running mission threads.
         self.spawn_mission_outcome_watcher(id, thread_id, fire_instant);
-
-        // Increment the in-memory running-thread counter for this mission.
-        // Must happen after a successful spawn so a failed spawn (store error,
-        // budget refusal) does not inflate the count. The counter may not exist
-        // yet (first fire after startup); `or_insert(0)` initialises it to 0
-        // before incrementing.
-        *self.running_thread_counts.write().await.entry(id).or_insert(0) += 1;
 
         // Record the thread + trigger payload in mission history
         let mut updated = mission;
@@ -2055,10 +2064,18 @@ impl MissionManager {
                 _ => continue,
             }
         }
+        // Use `or_insert` rather than `insert` to avoid overwriting a counter
+        // value that was written by a concurrent `fire_mission` between the
+        // fast-path read-lock release and this write-lock acquisition. If
+        // another task already seeded (and possibly incremented) the counter,
+        // we leave it untouched; a slightly stale `running` from our store
+        // scan is still safe — the next fast-path call will see the current
+        // value and the max_concurrent enforcement tolerates this narrow gap.
         self.running_thread_counts
             .write()
             .await
-            .insert(mission.id, running);
+            .entry(mission.id)
+            .or_insert(running);
         running
     }
 
@@ -6128,9 +6145,14 @@ mod tests {
     }
 
     /// Verify that the in-memory running-thread counter is incremented by
-    /// `fire_mission` and decremented by the outcome watcher when the thread
-    /// completes. After firing 5 threads and waiting for 3 to complete the
-    /// counter must equal 2, and the counter must have been seeded (Some).
+    /// `fire_mission` (when `max_concurrent > 0`) and decremented by the
+    /// outcome watcher when the thread completes, reaching 0 after all 5
+    /// threads finish.
+    ///
+    /// The counter is only maintained when `max_concurrent > 0` — for
+    /// unlimited missions (`max_concurrent == 0`) the counter is never
+    /// populated so as not to create an imbalanced state that would confuse
+    /// watchers installed by `resume_recoverable_threads`.
     #[tokio::test]
     async fn running_thread_counter_tracks_fire_and_complete() {
         let store = Arc::new(TestStore::new());
@@ -6152,31 +6174,69 @@ mod tests {
             .await
             .unwrap();
 
-        // Fire 5 threads. The MockLlm returns immediately so they complete
-        // very quickly, but we need to prevent completion to test mid-flight
-        // counts. Instead we fire them and check the counter right after each
-        // fire (before the watcher can decrement).
-        let mut fired = Vec::new();
+        // Set max_concurrent = 10 so all 5 fires succeed and the counter is
+        // maintained (the guard requires max_concurrent > 0).
+        mgr.update_mission(
+            id,
+            "alice",
+            MissionUpdate {
+                max_concurrent: Some(10),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+
+        // Fire 5 threads. The counter is incremented (before the watcher
+        // spawn) and the watcher decrements when done.
         for _ in 0..5 {
             let tid = mgr.fire_mission(id, "alice", None).await.unwrap();
-            assert!(tid.is_some(), "each fire should succeed");
-            fired.push(tid.unwrap());
+            assert!(tid.is_some(), "each fire should succeed with max_concurrent=10");
         }
 
-        // The counter must be 5 immediately after all fires (before any
-        // watchers have decremented). The watcher tasks run on the Tokio
-        // runtime and may start racing, so we give them a moment — but the
-        // important invariant is that the counter reflects increments.
-        // Because MockLlm completes instantly, threads finish quickly.
-        // Wait for all threads to complete.
+        // Because MockLlm returns immediately, threads complete almost
+        // instantly. Wait long enough for all watcher tasks to decrement.
         tokio::time::sleep(Duration::from_millis(200)).await;
 
-        // All 5 threads should have completed; counter must be 0.
-        let count_after_all_done = mgr.running_thread_count_for_test(id).await;
+        // Counter must be seeded (Some) and at 0 after all threads complete.
+        let count = mgr.running_thread_count_for_test(id).await;
         assert_eq!(
-            count_after_all_done,
+            count,
             Some(0),
-            "counter must reach 0 after all threads complete"
+            "counter must reach 0 after all 5 threads complete"
+        );
+    }
+
+    /// Verify that missions with `max_concurrent == 0` (unlimited) do NOT
+    /// populate the counter. This is the guard that prevents imbalanced
+    /// decrements from `resume_recoverable_threads` watchers.
+    #[tokio::test]
+    async fn running_thread_counter_not_populated_for_unlimited_missions() {
+        let store = Arc::new(TestStore::new());
+        let mgr = make_mission_manager_with_response(Arc::clone(&store) as Arc<dyn Store>, "done");
+        let project_id = ProjectId::new();
+
+        let id = mgr
+            .create_mission(
+                project_id,
+                "alice",
+                "unlimited",
+                "no limit",
+                MissionCadence::Manual,
+                Vec::new(),
+            )
+            .await
+            .unwrap();
+
+        // max_concurrent defaults to 0 for Manual missions — no update needed.
+        let tid = mgr.fire_mission(id, "alice", None).await.unwrap();
+        assert!(tid.is_some(), "fire should succeed");
+
+        // Counter must remain absent (None) — not populated for unlimited missions.
+        assert_eq!(
+            mgr.running_thread_count_for_test(id).await,
+            None,
+            "counter must not be seeded for max_concurrent=0 missions"
         );
     }
 
