@@ -2472,12 +2472,7 @@ async fn handle_get_actions(
             let actions_json: Vec<serde_json::Value> = actions
                 .iter()
                 .map(|a| {
-                    let words: Vec<&str> = a.description.split_whitespace().collect();
-                    let description = if words.len() > 60 {
-                        words[..60].join(" ")
-                    } else {
-                        a.description.clone()
-                    };
+                    let description = crate::executor::token_guard::truncate_to_60_words(&a.description);
                     serde_json::json!({
                         "name": a.name,
                         "description": description,
@@ -2799,7 +2794,7 @@ fn handle_apply_token_guard(
     let budget = PromptBudget {
         total: budget_total,
         system_prompt_reserved: 1024,
-        skill_budget: thread.config.skill_token_budget,
+        skill_budget: thread.config.skill_token_budget.min(budget_total),
         memory_doc_budget: budget_total / 4,
         tool_schema_budget: 512,
     };

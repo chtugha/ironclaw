@@ -93,7 +93,7 @@ const DROPPABLE_START: &str = "<!-- droppable-start -->";
 const DROPPABLE_END: &str = "<!-- droppable-end -->";
 
 /// Truncate `description` to at most 60 words.
-fn truncate_to_60_words(description: &str) -> String {
+pub fn truncate_to_60_words(description: &str) -> String {
     let mut iter = description.split_whitespace();
     let words: Vec<&str> = iter.by_ref().take(60).collect();
     if iter.next().is_none() {
@@ -241,6 +241,14 @@ pub fn apply(budget: &PromptBudget, parts: &mut PromptParts, thread_id: &str) ->
         let new_tokens = token_count(&new_prompt);
         parts.system_prompt = new_prompt;
         current = current.saturating_sub(old_tokens.saturating_sub(new_tokens));
+        if !parts.plan_anchor_text.is_empty()
+            && !parts.system_prompt.contains(&parts.plan_anchor_text)
+        {
+            warn!(
+                thread_id = %thread_id,
+                "plan_anchor lost after droppable section removal — anchor was inside a droppable block"
+            );
+        }
     }
 
     if current <= budget.total {

@@ -1128,16 +1128,16 @@ impl MissionManager {
         let mut spawned = Vec::new();
 
         for mid in active_ids {
-            let mission = match self.store.load_mission(mid).await? {
-                Some(m) if m.status == MissionStatus::Active => m,
-                // Completed event-driven missions can still fire — each event
-                // is a fresh investigation. Only Failed missions are truly dead.
-                Some(m) if m.status == MissionStatus::Completed && m.is_event_driven() => m,
-                _ => continue,
+            let mission = match self.store.load_mission(mid).await {
+                Ok(Some(m)) if m.status == MissionStatus::Active => m,
+                Ok(Some(m)) if m.status == MissionStatus::Completed && m.is_event_driven() => m,
+                Ok(_) => continue,
+                Err(e) => {
+                    debug!(mission_id = %mid, error = %e, "fire_on_system_event: failed to load mission, skipping");
+                    continue;
+                }
             };
 
-            // Only fire missions owned by this user (per-user learning missions)
-            // or globally shared missions.
             if !mission.is_owned_by(user_id) && !mission.owner_id().is_shared() {
                 continue;
             }
@@ -1241,8 +1241,12 @@ impl MissionManager {
                 }
             }
 
-            if let Some(tid) = self.fire_mission(mid, user_id, payload.clone()).await? {
-                spawned.push(tid);
+            match self.fire_mission(mid, user_id, payload.clone()).await {
+                Ok(Some(tid)) => spawned.push(tid),
+                Ok(None) => {}
+                Err(e) => {
+                    debug!(mission_id = %mid, error = %e, "fire_on_system_event: fire_mission failed, skipping");
+                }
             }
         }
 
@@ -1266,12 +1270,14 @@ impl MissionManager {
         let mut spawned = Vec::new();
 
         for mid in active_ids {
-            let mission = match self.store.load_mission(mid).await? {
-                Some(m) if m.status == MissionStatus::Active => m,
-                // Completed event-driven missions can still fire — each event
-                // is a fresh investigation.
-                Some(m) if m.status == MissionStatus::Completed && m.is_event_driven() => m,
-                _ => continue,
+            let mission = match self.store.load_mission(mid).await {
+                Ok(Some(m)) if m.status == MissionStatus::Active => m,
+                Ok(Some(m)) if m.status == MissionStatus::Completed && m.is_event_driven() => m,
+                Ok(_) => continue,
+                Err(e) => {
+                    debug!(mission_id = %mid, error = %e, "fire_on_webhook: failed to load mission, skipping");
+                    continue;
+                }
             };
 
             if !mission.is_owned_by(user_id) && !mission.owner_id().is_shared() {
@@ -1294,8 +1300,12 @@ impl MissionManager {
                 }
             }
 
-            if let Some(tid) = self.fire_mission(mid, user_id, payload.clone()).await? {
-                spawned.push(tid);
+            match self.fire_mission(mid, user_id, payload.clone()).await {
+                Ok(Some(tid)) => spawned.push(tid),
+                Ok(None) => {}
+                Err(e) => {
+                    debug!(mission_id = %mid, error = %e, "fire_on_webhook: fire_mission failed, skipping");
+                }
             }
         }
 

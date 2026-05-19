@@ -30,10 +30,22 @@ const SENSITIVE_PATH_PATTERNS: &[&str] = &[
     "/.bash_history",
     "/.zsh_history",
     "/.histfile",
+    // macOS credential stores
+    "/library/keychains/",
+    "/library/application support/google/chrome/",
+    "/library/application support/firefox/",
+    "/library/safari/",
+    // Password managers
+    "/.password-store/",
+    // System user enumeration
+    "/etc/passwd",
 ];
 
 /// Sensitive file extensions that indicate cryptographic key material.
-const SENSITIVE_EXTENSIONS: &[&str] = &[".pem", ".key", ".p12", ".pfx", ".jks", ".keystore"];
+const SENSITIVE_EXTENSIONS: &[&str] = &[
+    ".pem", ".key", ".p12", ".pfx", ".jks", ".keystore",
+    ".kdbx", ".1pux",
+];
 
 /// Safe file suffixes that should NOT be blocked even if they match sensitive extensions.
 const SAFE_SUFFIXES: &[&str] = &[".dist"];
@@ -65,10 +77,15 @@ const SENSITIVE_FILENAMES: &[&str] = &[
 /// make this function async and use `tokio::fs::canonicalize`.
 pub fn is_sensitive_path(path: &Path) -> bool {
     let resolved = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
-    let path_str = resolved
+    let mut path_str = resolved
         .to_string_lossy()
         .replace('\\', "/")
         .to_ascii_lowercase();
+    // Ensure SENSITIVE_PATH_PATTERNS (which all start with "/") match even when
+    // `canonicalize()` fell back to a relative path (file does not yet exist).
+    if !path_str.starts_with('/') {
+        path_str = format!("/{}", path_str);
+    }
 
     // Block .env files (except safe suffixes like .env.example)
     // Must NOT match .envrc, .environment, etc. — only exact ".env" or ".env.<variant>"
@@ -278,6 +295,36 @@ mod tests {
         assert!(!is_sensitive_path(Path::new("/home/user/.envrc")));
         assert!(!is_sensitive_path(Path::new("/home/user/.environment")));
         assert!(!is_sensitive_path(Path::new("/home/user/project/.envrc")));
+    }
+
+    #[test]
+    fn blocks_macos_credential_stores() {
+        assert!(is_sensitive_path(Path::new(
+            "/Users/user/Library/Keychains/login.keychain-db"
+        )));
+        assert!(is_sensitive_path(Path::new(
+            "/Users/user/Library/Application Support/Google/Chrome/Default/Login Data"
+        )));
+        assert!(is_sensitive_path(Path::new(
+            "/Users/user/Library/Application Support/Firefox/Profiles/abc123.default/logins.json"
+        )));
+        assert!(is_sensitive_path(Path::new(
+            "/Users/user/Library/Safari/Bookmarks.plist"
+        )));
+    }
+
+    #[test]
+    fn blocks_password_managers() {
+        assert!(is_sensitive_path(Path::new(
+            "/home/user/.password-store/email.gpg"
+        )));
+        assert!(is_sensitive_path(Path::new("/home/user/vault.kdbx")));
+        assert!(is_sensitive_path(Path::new("/home/user/export.1pux")));
+    }
+
+    #[test]
+    fn blocks_etc_passwd() {
+        assert!(is_sensitive_path(Path::new("/etc/passwd")));
     }
 
     #[test]

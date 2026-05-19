@@ -330,6 +330,10 @@ Task decomposition is triggered in two conditions: (a) the planning call goal ov
 | A3 | The idle mission mode is opt-in. Existing server deployments are unaffected unless they explicitly switch a mission to idle mode. |
 | A4 | Skills depending on cloud APIs (GitHub, Linear, Notion) remain as installable opt-ins; they simply must not activate by default when no credential is configured. |
 | A5 | The planning call assumes that the local LLM can follow a simple numbered-list instruction. Models below ~3B parameters may not reliably comply; this is considered out of scope for the local minimum hardware target. |
+| C10 | **Mission thread config propagation (deferred).** Mission threads currently use `ThreadConfig::default()` instead of operator-configured settings. This means `max_prompt_tokens` and other tuned fields are not respected for mission-spawned threads. Tracked as Step 19. |
+| C11 | **`count_running_threads` O(N) complexity (deferred).** The running-thread gate in `fire_mission` iterates all thread history entries with per-entry store lookups. Acceptable for current workloads; will become a bottleneck for long-lived missions with hundreds of threads. Tracked as Step 20. |
+| C12 | **Plan doc deduplication (deferred).** `__save_plan_doc__` creates a fresh `MemoryDoc` per call without checking for existing docs with the same goal prefix. This produces duplicate cache entries that waste token budget during retrieval. Not a correctness bug — highest-confidence doc wins — but an efficiency concern. Tracked as Step 21. |
+| C13 | **CJK/multilingual token under-estimation (deferred).** The byte-based approximation (`bytes × 0.25`) is conservative for ASCII but under-estimates CJK, Arabic, and emoji text by 50–100%. A proper tokenizer or adjusted multiplier is needed for multilingual home-use scenarios. Tracked as Step 22. |
 
 ---
 

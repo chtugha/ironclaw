@@ -838,7 +838,10 @@ def run_minimal_planning_call(goal, actions):
         {"role": "user", "content": goal},
     ]
     cfg = {"force_text": True, "is_planning_call": True, "max_tokens": 200}
-    response = __llm_complete__(planning_messages, [], cfg)
+    try:
+        response = __llm_complete__(planning_messages, [], cfg)
+    except Exception:
+        return None
     text = response.get("content", "")
     if not text:
         return None
@@ -866,7 +869,10 @@ def run_miniplan_call(goal):
         {"role": "user", "content": goal},
     ]
     cfg = {"force_text": True, "is_planning_call": True, "max_tokens": 200}
-    response = __llm_complete__(planning_messages, [], cfg)
+    try:
+        response = __llm_complete__(planning_messages, [], cfg)
+    except Exception:
+        return None
     text = response.get("content", "")
     if not text:
         return None
@@ -888,8 +894,9 @@ def should_invalidate_plan(user_message, current_plan, goal):
         return False
     lower = user_message.lower().strip()
     prefixes = [
-        "instead ", "forget the plan", "forget about", "cancel the ",
-        "cancel this", "new task", "switch to",
+        "instead ", "forget the plan", "forget about the plan",
+        "forget about this", "forget about that",
+        "cancel the ", "cancel this", "new task", "switch to",
     ]
     phrases = [
         "do this instead", "change of plan", "never mind", "start over",
@@ -902,6 +909,17 @@ def should_invalidate_plan(user_message, current_plan, goal):
         if phrase in lower:
             return True
     return False
+
+
+def _capture_subtask_response(state, subtask_result):
+    """Capture a subtask's response into state with byte-based truncation."""
+    resp = subtask_result.get("response")
+    if resp is not None:
+        resp_str = str(resp)
+        encoded = resp_str.encode("utf-8")
+        if len(encoded) > 800:
+            resp_str = encoded[:800].decode("utf-8", errors="ignore")
+        state["_last_response"] = resp_str
 
 
 def run_decomposition_loop(subtasks, original_goal, actions, config, state, resume_context=None):
@@ -922,13 +940,23 @@ def run_decomposition_loop(subtasks, original_goal, actions, config, state, resu
     subtask_config["_suppress_transitions"] = True
     subtask_config["step_count"] = 0
 
-    prior_plan_doc_id = state.pop("active_plan_doc_id", None)
-    try:
-        decomp_plan_doc_id = __save_plan_doc__(original_goal, subtasks, True)
-    except Exception:
-        decomp_plan_doc_id = None
-    if decomp_plan_doc_id:
-        state["active_plan_doc_id"] = decomp_plan_doc_id
+    # On checkpoint resume, _decomp_prior_plan_doc_id was saved before the pause.
+    # Restore it so that plan tracking remains correct across the pause/resume boundary.
+    prior_plan_doc_id = state.pop("_decomp_prior_plan_doc_id", None)
+
+    # When resuming from a checkpoint (resume_context is set), the decomp plan doc
+    # was already saved before the pause; skip creating a duplicate.
+    decomp_plan_doc_id = state.get("active_plan_doc_id") if resume_context is not None else None
+    if decomp_plan_doc_id is None:
+        # First execution: move outer active plan to prior and save a new decomp plan.
+        if prior_plan_doc_id is None:
+            prior_plan_doc_id = state.pop("active_plan_doc_id", None)
+        try:
+            decomp_plan_doc_id = __save_plan_doc__(original_goal, subtasks, True)
+        except Exception:
+            decomp_plan_doc_id = None
+        if decomp_plan_doc_id:
+            state["active_plan_doc_id"] = decomp_plan_doc_id
 
     for subtask_idx, subtask in enumerate(subtasks):
         subtask_state = {}
@@ -950,10 +978,22 @@ def run_decomposition_loop(subtasks, original_goal, actions, config, state, resu
                 _do_transition("failed", "subtask exception: " + str(exc), config)
             except Exception:
                 pass
+            if prior_plan_doc_id:
+                try:
+                    __record_skill_usage__(prior_plan_doc_id, False)
+                except Exception:
+                    pass
+            state.pop("_last_response", None)
             return complete_result(state, "failed", error="Subtask raised: " + str(exc))
 
         subtask_outcome = subtask_result.get("outcome")
         if subtask_outcome == "stopped":
+            _capture_subtask_response(state, subtask_result)
+            if prior_plan_doc_id:
+                try:
+                    __record_skill_usage__(prior_plan_doc_id, False)
+                except Exception:
+                    pass
             try:
                 _do_transition("completed", "stopped by signal", config)
             except Exception:
@@ -963,6 +1003,8 @@ def run_decomposition_loop(subtasks, original_goal, actions, config, state, resu
             state["_decomp_subtask_idx"] = subtask_idx
             state["_decomp_subtasks"] = subtasks
             state["_decomp_original_goal"] = original_goal
+            if prior_plan_doc_id:
+                state["_decomp_prior_plan_doc_id"] = prior_plan_doc_id
             try:
                 __save_checkpoint__(state, {
                     "decomp_paused": True,
@@ -976,6 +1018,7 @@ def run_decomposition_loop(subtasks, original_goal, actions, config, state, resu
                 pass
             return {**subtask_result, "state": state}
         if subtask_outcome not in ("completed",):
+            _capture_subtask_response(state, subtask_result)
             if prior_plan_doc_id:
                 try:
                     __record_skill_usage__(prior_plan_doc_id, False)
@@ -987,8 +1030,7 @@ def run_decomposition_loop(subtasks, original_goal, actions, config, state, resu
                 pass
             return complete_result(state, "failed", error="Subtask failed: " + subtask)
 
-        if subtask_result.get("response"):
-            state["_last_response"] = str(subtask_result["response"])[:800]
+        _capture_subtask_response(state, subtask_result)
 
     if prior_plan_doc_id:
         try:
@@ -1020,7 +1062,10 @@ def run_planning_phase(goal, actions, config, state):
 
     template = find_plan_template(docs, goal)
     if template:
-        plan_doc_id = __save_plan_doc__(goal, template["steps"], False)
+        try:
+            plan_doc_id = __save_plan_doc__(goal, template["steps"], False)
+        except Exception:
+            plan_doc_id = None
         if plan_doc_id:
             state["active_plan_doc_id"] = plan_doc_id
         return (template["steps"], "template", docs)
@@ -1035,20 +1080,26 @@ def run_planning_phase(goal, actions, config, state):
             if config.get("decomposition_depth", 0) >= 1:
                 return (cached["steps"], "cached", docs)
             return (cached["steps"], "decompose", docs)
-        plan_doc_id = __save_plan_doc__(goal, cached["steps"], False)
+        try:
+            plan_doc_id = __save_plan_doc__(goal, cached["steps"], False)
+        except Exception:
+            plan_doc_id = None
         if plan_doc_id:
             state["active_plan_doc_id"] = plan_doc_id
         return (cached["steps"], "cached", docs)
 
     steps = run_minimal_planning_call(goal, actions)
     if steps is not None:
-        plan_doc_id = __save_plan_doc__(goal, steps, False)
+        try:
+            plan_doc_id = __save_plan_doc__(goal, steps, False)
+        except Exception:
+            plan_doc_id = None
         if plan_doc_id:
             state["active_plan_doc_id"] = plan_doc_id
         return (steps, "llm", docs)
 
     if config.get("decomposition_depth", 0) >= 1:
-        return (["Complete: " + goal], "llm", docs)
+        return (["Complete: " + goal], "depth_limit", docs)
 
     subtasks = run_miniplan_call(goal)
     if subtasks is None:
@@ -1155,6 +1206,12 @@ def run_loop(context, goal, actions, state, config):
         remaining_idx = state.pop("_decomp_subtask_idx", 0)
         remaining_subtasks = state.pop("_decomp_subtasks", [])
         original_goal_decomp = state.pop("_decomp_original_goal", goal)
+        if not isinstance(remaining_subtasks, list) or not all(
+            isinstance(s, str) and len(s) < 2000 for s in remaining_subtasks
+        ):
+            remaining_subtasks = []
+        if not isinstance(remaining_idx, int) or remaining_idx < 0:
+            remaining_idx = 0
         remaining = remaining_subtasks[remaining_idx:]
         if remaining:
             return run_decomposition_loop(remaining, original_goal_decomp, actions, config, state,
@@ -1163,7 +1220,12 @@ def run_loop(context, goal, actions, state, config):
         _write_last_response(state, working_messages)
         return complete_result(state, "completed")
     elif state.get("plan_steps"):
-        plan_steps = state["plan_steps"]
+        raw_steps = state["plan_steps"]
+        if isinstance(raw_steps, list) and all(isinstance(s, str) and len(s) < 2000 for s in raw_steps):
+            plan_steps = raw_steps
+        else:
+            plan_steps = ["Complete the task: " + goal]
+            state["plan_steps"] = plan_steps
         plan_docs = None
     elif has_pending_action_result:
         # The context already contains an ActionResult — this is a gate
@@ -1203,10 +1265,16 @@ def run_loop(context, goal, actions, state, config):
             injected_text = signal["inject"]
             current_plan = state.get("plan_steps", [])
             if should_invalidate_plan(injected_text, current_plan, goal):
+                old_plan_doc_id = state.pop("active_plan_doc_id", None)
+                if old_plan_doc_id:
+                    try:
+                        __record_skill_usage__(old_plan_doc_id, False)
+                    except Exception:
+                        pass
                 state.pop("plan_steps", None)
                 state.pop("plan_current_step", None)
-                state.pop("active_plan_doc_id", None)
-                new_steps, new_source, _ = run_planning_phase(injected_text, actions, config, state)
+                state.pop("plan_anchor_text", None)
+                new_steps, new_source, plan_docs = run_planning_phase(injected_text, actions, config, state)
                 if new_source == "decompose":
                     _write_last_response(state, working_messages)
                     return run_decomposition_loop(new_steps, injected_text, actions, config, state)
@@ -1283,6 +1351,13 @@ def run_loop(context, goal, actions, state, config):
                 for a in actions
             ] if actions else []
             cached_tool_schemas = guard_tool_schemas
+            reinit_hist = []
+            if needs_context_reinit:
+                reinit_hist = [
+                    {"role": m.get("role", ""), "content": m.get("content", "")}
+                    for m in working_messages
+                    if m.get("role") not in ("System", "system")
+                ]
             guard_result = __apply_token_guard__({
                 "budget": config.get("max_prompt_tokens", 8192),
                 "system_prompt": system_content,
@@ -1290,7 +1365,7 @@ def run_loop(context, goal, actions, state, config):
                 "skills": guard_skills_input,
                 "memory_docs": guard_docs_input,
                 "tool_schemas": guard_tool_schemas,
-                "conversation_history": [],
+                "conversation_history": reinit_hist,
             })
             if not guard_result.get("fits", True):
                 depth = config.get("decomposition_depth", 0)
@@ -1389,7 +1464,7 @@ def run_loop(context, goal, actions, state, config):
             })
             if not guard_result_gt0.get("fits", True):
                 __emit_event__("token_budget_warning", step=step)
-                surviving_hist = guard_result_gt0.get("conversation_history", conv_hist_gt0)
+                surviving_hist = guard_result_gt0.get("conversation_history") or conv_hist_gt0
                 n_dropped = len(conv_hist_gt0) - len(surviving_hist)
                 if n_dropped > 0:
                     sys_msgs = [m for m in working_messages if m.get("role") in ("System", "system")]

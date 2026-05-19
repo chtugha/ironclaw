@@ -185,13 +185,6 @@ impl Tool for LocalSearchTool {
         cmd.env("RIPGREP_CONFIG_PATH", "");
         cmd.arg("--color").arg("never");
         cmd.arg("--no-heading");
-        cmd.arg("--glob").arg("!.git");
-        cmd.arg("--glob").arg("!node_modules");
-        cmd.arg("--glob").arg("!target");
-        cmd.arg("--glob").arg("!.env");
-        cmd.arg("--glob").arg("!.env.*");
-        cmd.arg("--glob").arg("!.npmrc");
-        cmd.arg("--glob").arg("!.netrc");
 
         match output_mode {
             "files_with_matches" => {
@@ -214,6 +207,9 @@ impl Tool for LocalSearchTool {
         if case_insensitive {
             cmd.arg("-i");
         }
+
+        // User glob is applied first so that system security exclusions added
+        // after it take precedence (ripgrep evaluates globs in order; last match wins).
         if let Some(g) = glob_filter {
             let g_lower = g.to_lowercase();
             if (g_lower.contains(".git") || g_lower.contains("node_modules") || g_lower.contains("target"))
@@ -222,6 +218,15 @@ impl Tool for LocalSearchTool {
                 return Err(ToolError::InvalidParameters(
                     "Glob pattern must not re-include excluded directories (.git, node_modules, target).".to_string()
                 ));
+            }
+            const SENSITIVE_REINCLUDE: &[&str] = &[".env", ".npmrc", ".netrc"];
+            if !g.starts_with('!')
+                && let Some(pat) = SENSITIVE_REINCLUDE.iter().find(|&&p| g_lower.contains(p))
+            {
+                return Err(ToolError::InvalidParameters(format!(
+                    "Glob pattern '{}' would re-include sensitive file '{}' excluded by default.",
+                    g, pat
+                )));
             }
             if scope == "global" {
                 const SENSITIVE_GLOB_SUBSTRINGS: &[&str] = &[
@@ -238,6 +243,27 @@ impl Tool for LocalSearchTool {
                 }
             }
             cmd.arg("--glob").arg(g);
+        }
+
+        // System security exclusions are always applied AFTER the user glob so they
+        // take precedence regardless of what the user passes (e.g. ".*" cannot
+        // re-include .env because "!.env" is evaluated later and wins).
+        cmd.arg("--glob").arg("!.git");
+        cmd.arg("--glob").arg("!node_modules");
+        cmd.arg("--glob").arg("!target");
+        cmd.arg("--glob").arg("!.env");
+        cmd.arg("--glob").arg("!.env.*");
+        cmd.arg("--glob").arg("!.npmrc");
+        cmd.arg("--glob").arg("!.netrc");
+        // For global scope: also exclude known credential file locations
+        // by extension so wildcard globs cannot expose them.
+        if scope == "global" {
+            cmd.arg("--glob").arg("!.ssh/**");
+            cmd.arg("--glob").arg("!.aws/**");
+            cmd.arg("--glob").arg("!**/*.pem");
+            cmd.arg("--glob").arg("!**/*.key");
+            cmd.arg("--glob").arg("!**/*.p12");
+            cmd.arg("--glob").arg("!**/*.pfx");
         }
 
         cmd.arg("-e").arg(pattern);
@@ -292,7 +318,7 @@ impl Tool for LocalSearchTool {
                 let files: Vec<String> = paginated
                     .iter()
                     .map(|line| {
-                        let path = line.trim().to_string();
+                        let path = line.to_string();
                         std::path::Path::new(&path)
                             .strip_prefix(&search_path)
                             .map(|p| p.to_string_lossy().into_owned())

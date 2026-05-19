@@ -12,6 +12,7 @@ const BLOCKED_SCHEME_MSG: &str =
 const BLOCKED_SCHEMES: &[&str] = &[
     "file:", "data:", "javascript:", "vbscript:",
     "ftp:", "sftp:", "gopher:", "dict:", "ldap:",
+    "blob:",
 ];
 
 fn strip_url_noise(s: &str) -> String {

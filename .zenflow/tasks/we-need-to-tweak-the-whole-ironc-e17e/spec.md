@@ -1486,3 +1486,7 @@ Key integration scenarios to verify:
 | C8 — Planning call 200-token cap | Hard-coded in `run_minimal_planning_call()` config dict |
 | C9 — No decomposition recursion | `decomposition_depth` guard in `ThreadConfig` enforced in orchestrator |
 | R1 — Skill budget breaking change | Default changes to 0; startup warning emitted per skill; documentation updated |
+| C10 — Mission ThreadConfig (deferred) | `MissionManager::fire_mission()` uses `ThreadConfig::default()` — must inject resolved `AgentConfig` into `MissionManager` at construction. Plan Step 19 |
+| C11 — count_running_threads O(N) (deferred) | Iterates `thread_history` with per-entry `load_thread` store call. Replace with atomic counter or DB-side `COUNT(*)`. Plan Step 20 |
+| C12 — Plan doc deduplication (deferred) | `handle_save_plan_doc` always creates new `MemoryDoc`. Needs upsert-on-title-match to prevent cache bloat. Plan Step 21 |
+| C13 — CJK token approximation (deferred) | `bytes × 0.25` under-counts CJK/emoji. Integrate `tiktoken-rs` or adjust multiplier to `0.33`. Must update both Rust `token_count()` and Python `_token_count()`. Plan Step 22 |

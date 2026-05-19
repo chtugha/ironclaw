@@ -519,3 +519,65 @@ Verification steps:
 - `python3 -m py_compile crates/ironclaw_engine/orchestrator/default.py` — no syntax errors
 - Spot-check: start the agent with `database_backend = "libsql"` (local profile), configure an Ollama provider, verify that `PlatformInfo.is_local_backend = true`, and confirm the Tier 0 system prompt is used (no CodeAct preamble in the assembled prompt)
 - Confirm `cargo check --workspace` produces no reference to `SkillCatalog`, `engine_v2` (field), `is_engine_v2_enabled`, `agentic_loop`, `session_manager`, `dispatcher`, `compaction`, `context_monitor`
+
+---
+
+## Follow-Up Steps (identified during review rounds 8–10)
+
+> These items were identified as architectural improvements that go beyond single-fix scope.
+> Each is tracked as its own step below. REQ and spec references are appended inline.
+
+### [ ] Step 19: Propagate operator-configured ThreadConfig to mission threads
+
+Currently, `MissionManager::fire_mission()` uses `ThreadConfig::default()` when spawning mission threads (line 883 of `crates/ironclaw_engine/src/runtime/mission.rs`). This means mission threads always get the hardcoded defaults (`max_prompt_tokens: 8192`, `skill_token_budget: 2048`, `plan_confidence_threshold: 0.6`) regardless of the operator's settings. A user who configures a larger local context window (e.g. for a 70B model) will see mission threads silently truncated at 8192 while foreground threads use the configured value.
+
+Changes:
+- Add a `default_thread_config: ThreadConfig` field to `MissionManager` (or pass it through `MissionManagerConfig`)
+- Populate it at construction time from the resolved `AgentConfig` (same path that `router.rs` uses for user-message threads)
+- Replace `ThreadConfig::default()` in `fire_mission()` with `self.default_thread_config.clone()`
+- When a `Mission` struct has its own per-mission override fields (future), prefer those over the default
+
+Verification:
+- Unit test: `fire_mission` spawns a thread whose `ThreadConfig.max_prompt_tokens` matches the injected config, not the default
+- Integration: configure `max_prompt_tokens = 16384` in settings, fire a mission, verify the spawned thread's config reflects 16384
+
+### [ ] Step 20: Optimize `count_running_threads` to avoid O(N) store round-trips
+
+`MissionManager::count_running_threads()` iterates `mission.thread_history` in reverse and calls `self.store.load_thread(tid)` for each entry. For long-running missions that have accumulated hundreds of thread IDs, this performs O(N) store calls on every `fire_mission()` invocation (the `max_concurrent` gate).
+
+Changes:
+- Option A (preferred): Add a `running_thread_count: AtomicUsize` field to `MissionManager` (or a `HashMap<MissionId, usize>`). Increment on `fire_mission()` success, decrement in `spawn_mission_outcome_watcher()` when the thread completes. `count_running_threads()` becomes an O(1) read
+- Option B: Add a `Store::count_threads_by_status(mission_id, &[ThreadState::Running, ThreadState::Waiting])` query that pushes the filter to the DB layer as a single SQL `SELECT COUNT(*)` instead of loading N full thread records
+- Whichever option is chosen, retain the current `load_thread` loop as a fallback for correctness during the migration or when the in-memory counter is suspect (e.g. after a process restart)
+
+Verification:
+- Unit test: fire 5 mission threads, complete 3, verify count returns 2 without loading all 5 from the store
+- Benchmark: with 200 thread_history entries, verify `fire_mission` does not regress to O(N) store calls
+
+### [ ] Step 21: Deduplicate plan docs in `__save_plan_doc__` to prevent redundant cache entries
+
+`handle_save_plan_doc` in `orchestrator.rs` (line 2892) always creates a new `MemoryDoc` with a fresh `DocId` (UUID). Two threads with the same goal (or goals sharing a 64-char prefix) each create independent plan docs with identical titles. The `retrieve_context` path surfaces both, wasting token budget and potentially confusing plan-confidence scoring.
+
+Changes:
+- Before creating a new doc, query the store for an existing `DocType::Plan` doc with the same title (`"plan:{goal_prefix}"`) in the same project
+- If found: update the existing doc's `steps`, `confidence`, and `updated_at` fields. Preserve the existing `execution_count` and `failure_count` — do not reset them
+- If not found: create a new doc as currently done
+- The upsert must use `with_trusted_internal_writes` since plan docs carry the `plan:` title prefix
+
+Verification:
+- Unit test: save two plans with the same goal — verify only one doc exists in the store
+- Unit test: save a plan, then save again with updated steps — verify the existing doc was updated and execution_count is preserved
+
+### [ ] Step 22: Integrate a proper tokenizer for accurate CJK/multilingual token counting
+
+The current token counting approximation (`len(bytes) * 0.25`) under-estimates token counts for CJK, Arabic, and emoji-heavy text by up to 50–100%. For ASCII-heavy English content the approximation is acceptable, but for multilingual home-use scenarios this creates a real gap where the token guard approves prompts that exceed the actual model's context window.
+
+Changes:
+- Option A (lightweight): Add a `tiktoken-rs` dependency (or equivalent) to `ironclaw_engine`. Expose a `fn accurate_token_count(text: &str, model: &str) -> usize` function. Use it in the token guard's `apply()` function and in the Python `_token_count()` helper (via a new `__count_tokens__` host function). Fall back to the byte-based approximation when the model is unknown
+- Option B (minimal): Change the byte multiplier from `0.25` to `0.33` for a more conservative estimate that better approximates CJK text (3 bytes per char → 1 token per char) at the cost of slight over-counting for ASCII. This is a one-line change but still imprecise
+- Whichever option is chosen, update the Python `_token_count()` in `default.py` and the Rust `token_count()` in `token_guard.rs` to use the same formula
+
+Verification:
+- Unit test: a 100-character CJK string produces a token count within 20% of the expected tokenizer output
+- Unit test: ASCII strings still produce reasonable estimates (within 30% of tiktoken)
+- Constraint C3 in the spec must be updated to reflect the new approach
