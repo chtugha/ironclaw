@@ -161,16 +161,35 @@ impl AgentConfig {
             multi_tenant: parse_bool_env("AGENT_MULTI_TENANT", false)?,
             max_llm_concurrent_per_user: parse_option_env("TENANT_MAX_LLM_CONCURRENT")?,
             max_jobs_concurrent_per_user: parse_option_env("TENANT_MAX_JOBS_CONCURRENT")?,
-            max_prompt_tokens: db_first_or_default(
-                &settings.agent.max_prompt_tokens,
-                &defaults.max_prompt_tokens,
-                "AGENT_MAX_PROMPT_TOKENS",
-            )?,
-            plan_confidence_threshold: db_first_or_default(
-                &settings.agent.plan_confidence_threshold,
-                &defaults.plan_confidence_threshold,
-                "AGENT_PLAN_CONFIDENCE_THRESHOLD",
-            )?,
+            max_prompt_tokens: {
+                let v = db_first_or_default(
+                    &settings.agent.max_prompt_tokens,
+                    &defaults.max_prompt_tokens,
+                    "AGENT_MAX_PROMPT_TOKENS",
+                )?;
+                if v == 0 {
+                    return Err(ConfigError::InvalidValue {
+                        key: "agent.max_prompt_tokens".to_string(),
+                        message: "must be > 0 (use the default 8192 for home-use local models)"
+                            .to_string(),
+                    });
+                }
+                v
+            },
+            plan_confidence_threshold: {
+                let v = db_first_or_default(
+                    &settings.agent.plan_confidence_threshold,
+                    &defaults.plan_confidence_threshold,
+                    "AGENT_PLAN_CONFIDENCE_THRESHOLD",
+                )?;
+                if !(0.0..=1.0).contains(&v) {
+                    return Err(ConfigError::InvalidValue {
+                        key: "agent.plan_confidence_threshold".to_string(),
+                        message: format!("must be in [0.0, 1.0], got {v}"),
+                    });
+                }
+                v
+            },
             codeact_enabled: settings.agent.codeact_enabled,
         })
     }
@@ -179,6 +198,26 @@ impl AgentConfig {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_max_prompt_tokens_zero_is_rejected() {
+        let mut settings = Settings::default();
+        settings.agent.max_prompt_tokens = 0;
+        let result = AgentConfig::resolve(&settings);
+        assert!(result.is_err(), "max_prompt_tokens=0 must be rejected");
+    }
+
+    #[test]
+    fn test_plan_confidence_threshold_out_of_range_is_rejected() {
+        let mut settings = Settings::default();
+        settings.agent.plan_confidence_threshold = 1.5;
+        let result = AgentConfig::resolve(&settings);
+        assert!(result.is_err(), "plan_confidence_threshold > 1.0 must be rejected");
+
+        settings.agent.plan_confidence_threshold = -0.1;
+        let result2 = AgentConfig::resolve(&settings);
+        assert!(result2.is_err(), "plan_confidence_threshold < 0.0 must be rejected");
+    }
 
     #[test]
     fn test_default_timezone_rejects_invalid() {

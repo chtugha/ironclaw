@@ -743,11 +743,29 @@ def format_skills(skills):
     return "\n".join(parts)
 
 
+_COMPLEX_VERB_PREFIXES = (
+    "deploy ", "migrate ", "delete ", "drop the ", "drop all ", "remove all ",
+    "update all ", "upgrade all ", "reset ", "reformat ", "wipe ",
+    "overwrite ", "merge ", "sync all ", "rebase ", "rollback ",
+    "restore ", "backup ", "archive ", "format ", "encrypt ", "decrypt ",
+)
+
+
 def is_trivial(goal, config):
-    """Heuristic: return True when the goal is simple enough to skip planning."""
+    """Heuristic: return True when the goal is simple enough to skip planning.
+
+    Short goals that start with a complex/destructive verb are never trivial
+    regardless of word count — e.g. "Deploy to production" (3 words) must not
+    be classified as a single-step task.
+    """
     threshold = config.get("trivial_word_threshold", 8)
     words = goal.strip().split()
     lower = goal.lower().strip()
+
+    # Dangerous verbs always require planning regardless of length.
+    if any(lower.startswith(prefix) for prefix in _COMPLEX_VERB_PREFIXES):
+        return False
+
     if len(words) <= threshold:
         if " and " not in lower and " then " not in lower:
             return True
@@ -826,6 +844,39 @@ def find_cached_plan(docs, goal):
     return best
 
 
+def _parse_numbered_list(text):
+    """Parse a numbered list from LLM text. Tries regex first, then JSON fallback.
+
+    Returns a list of step strings, or an empty list if nothing is parseable.
+    Some LLMs return structured JSON instead of plain numbered text; the JSON
+    path handles those responses rather than silently returning None.
+    """
+    items = []
+    for line in text.strip().split("\n"):
+        line = line.strip()
+        if line and re.match(r"^\d+[\.\)]\s+", line):
+            step_text = re.sub(r"^\d+[\.\)]\s+", "", line).strip()
+            if step_text:
+                items.append(step_text)
+    if items:
+        return items
+
+    try:
+        data = json.loads(text)
+        if isinstance(data, list):
+            items = [str(s).strip() for s in data if str(s).strip()]
+        elif isinstance(data, dict):
+            for key in ("steps", "subtasks", "tasks", "plan"):
+                v = data.get(key)
+                if isinstance(v, list):
+                    items = [str(s).strip() for s in v if str(s).strip()]
+                    break
+    except (json.JSONDecodeError, TypeError, ValueError):
+        pass
+
+    return items
+
+
 def run_minimal_planning_call(goal, actions):
     """Isolated LLM call to generate a numbered plan. Returns list of steps or None."""
     if _token_count(goal) > 300:
@@ -845,13 +896,7 @@ def run_minimal_planning_call(goal, actions):
     text = response.get("content", "")
     if not text:
         return None
-    steps = []
-    for line in text.strip().split("\n"):
-        line = line.strip()
-        if line and re.match(r"^\d+[\.\)]\s+", line):
-            step_text = re.sub(r"^\d+[\.\)]\s+", "", line).strip()
-            if step_text:
-                steps.append(step_text)
+    steps = _parse_numbered_list(text)
     if not steps:
         return None
     return steps
@@ -876,13 +921,7 @@ def run_miniplan_call(goal):
     text = response.get("content", "")
     if not text:
         return None
-    subtasks = []
-    for line in text.strip().split("\n"):
-        line = line.strip()
-        if line and re.match(r"^\d+[\.\)]\s+", line):
-            task_text = re.sub(r"^\d+[\.\)]\s+", "", line).strip()
-            if task_text:
-                subtasks.append(task_text)
+    subtasks = _parse_numbered_list(text)
     if not subtasks:
         return None
     return subtasks
@@ -1058,7 +1097,10 @@ def run_planning_phase(goal, actions, config, state):
     if is_trivial(goal, config):
         return (["Complete the task: " + goal], "trivial", None)
 
-    docs = __retrieve_docs__(goal, 5) or []
+    try:
+        docs = __retrieve_docs__(goal, 5) or []
+    except Exception:
+        docs = []
 
     template = find_plan_template(docs, goal)
     if template:
@@ -1311,7 +1353,10 @@ def run_loop(context, goal, actions, state, config):
         if step == 0 or needs_context_reinit:
             docs = plan_docs if plan_docs is not None else (__retrieve_docs__(goal, 5) or [])
 
-            all_skills = __list_skills__()
+            try:
+                all_skills = __list_skills__() or []
+            except Exception:
+                all_skills = []
             explicit_skills, _rewritten_goal, missing_explicit_skills = extract_explicit_skills(all_skills, goal)
             active_skills = select_skills(all_skills, goal, max_candidates=3, max_tokens=config.get("skill_token_budget", 2048))
             explicit_names = set(
@@ -1351,13 +1396,15 @@ def run_loop(context, goal, actions, state, config):
                 for a in actions
             ] if actions else []
             cached_tool_schemas = guard_tool_schemas
-            reinit_hist = []
-            if needs_context_reinit:
-                reinit_hist = [
-                    {"role": m.get("role", ""), "content": m.get("content", "")}
-                    for m in working_messages
-                    if m.get("role") not in ("System", "system")
-                ]
+            # Always pass the full non-system conversation history so the token
+            # guard has an accurate picture of the prompt size — this matters on
+            # gate-resume paths where needs_context_reinit is False but
+            # working_messages already contains injected context.
+            reinit_hist = [
+                {"role": m.get("role", ""), "content": m.get("content", "")}
+                for m in working_messages
+                if m.get("role") not in ("System", "system")
+            ]
             guard_result = __apply_token_guard__({
                 "budget": config.get("max_prompt_tokens", 8192),
                 "system_prompt": system_content,

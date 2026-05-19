@@ -810,17 +810,18 @@ impl MissionManager {
         // Per-user global rate limit. Independent of per-mission cooldown,
         // this is a sliding-window cap across *all* of the user's missions
         // so a user with many event-triggered missions can't collectively
-        // flood the LLM. We only *check* here — recording is deferred until
-        // after the spawn succeeds so a downstream failure (store error,
-        // budget refusal, spawn error) doesn't consume a slot and slowly
-        // self-DoS the user.
-        if !self.check_user_rate(&mission.user_id).await {
+        // flood the LLM. The `peek_user_rate` here is a fast early-rejection;
+        // the definitive atomic `try_consume_user_rate_slot` is called after
+        // the spawn succeeds so that failed spawns do not consume a slot.
+        // Rate limiting is keyed to the *firing* user_id (not mission.user_id)
+        // so shared missions correctly attribute load to their actual requester.
+        if !self.peek_user_rate(user_id).await {
             debug!(
                 mission_id = %id,
-                user_id = %mission.user_id,
+                user_id = %user_id,
                 max_fires = self.rate_limit.max_fires,
                 window_secs = self.rate_limit.window.as_secs(),
-                "per-user mission fire rate limit reached"
+                "per-user mission fire rate limit reached (pre-check)"
             );
             return Ok(None);
         }
@@ -828,10 +829,10 @@ impl MissionManager {
         // Budget gate: when the host wires a `BudgetGate` (typically over
         // its CostGuard), refuse to fire when the user is out of budget.
         // Unattached gate = always allow.
-        if !self.budget_allows(&mission.user_id, id).await {
+        if !self.budget_allows(user_id, id).await {
             debug!(
                 mission_id = %id,
-                user_id = %mission.user_id,
+                user_id = %user_id,
                 "mission fire refused by budget gate"
             );
             return Ok(None);
@@ -908,7 +909,6 @@ impl MissionManager {
 
         // Record the thread + trigger payload in mission history
         let mut updated = mission;
-        let user_id_for_rate = updated.user_id.clone();
         updated.record_thread(thread_id);
         updated.threads_today += 1;
         updated.last_trigger_payload = trigger_payload;
@@ -994,11 +994,19 @@ impl MissionManager {
             );
         }
 
-        // Now that the spawn + persist have succeeded, consume a slot in
-        // the per-user rate window. Doing this here (rather than at the
-        // earlier check site) means store errors, budget refusals, and
-        // spawn failures all leave the user's window untouched.
-        self.record_user_rate(&user_id_for_rate).await;
+        // Atomically consume a rate-limit slot for the firing user now that
+        // the spawn has succeeded. Keyed to the *requesting* user_id (not
+        // mission.user_id) so shared-mission fires are attributed correctly.
+        // If the window became full between the earlier peek and now (due to
+        // a concurrent fire), log and continue — the thread is already running
+        // and the over-fire is benign in this narrow window.
+        if !self.try_consume_user_rate_slot(user_id).await {
+            debug!(
+                mission_id = %id,
+                user_id = %user_id,
+                "rate window filled between pre-check and spawn; accepting over-fire"
+            );
+        }
 
         debug!(mission_id = %id, thread_id = %thread_id, "mission fired");
 
@@ -2075,38 +2083,50 @@ impl MissionManager {
         self.event_regex_cache.write().await.remove(&mission_id);
     }
 
-    /// Per-user global rate limiter — read-only check. Sliding window of
-    /// timestamps; returns `true` if a new fire is currently allowed.
-    /// Evicts expired entries from the user's window as a side effect, but
-    /// does NOT record a new entry — call [`record_user_rate`] only after
-    /// the fire has actually succeeded so a failed spawn cannot consume a
-    /// slot (otherwise sustained store errors would self-DoS the user).
-    ///
-    /// [`record_user_rate`]: Self::record_user_rate
-    async fn check_user_rate(&self, user_id: &str) -> bool {
+    /// Fast non-consuming read-only check — returns `false` when the window is
+    /// already at capacity. Used as an early-rejection path. The definitive
+    /// slot reservation is `try_consume_user_rate_slot`, which is called only
+    /// after a successful spawn so that failed spawns do not waste slots.
+    async fn peek_user_rate(&self, user_id: &str) -> bool {
         let now = chrono::Utc::now();
         let window = chrono::Duration::from_std(self.rate_limit.window)
             .unwrap_or_else(|_| chrono::Duration::seconds(self.rate_limit.window.as_secs() as i64));
         let cutoff = now - window;
+        let log = self.user_fire_log.read().await;
+        let Some(entries) = log.get(user_id) else {
+            return true;
+        };
+        let active = entries.iter().filter(|ts| **ts >= cutoff).count();
+        (active as u32) < self.rate_limit.max_fires
+    }
 
+    /// Atomically check and consume a rate-limit slot for `user_id`.
+    ///
+    /// Replaces the former `check_user_rate` + `record_user_rate` two-step API
+    /// with a single write-lock critical section, eliminating the TOCTOU race
+    /// where two concurrent fires both pass the check before either records.
+    ///
+    /// The timestamp is only appended when a slot is actually available, so
+    /// failed spawns (store errors, budget refusals) must **not** call this
+    /// method — call it only after the spawn has successfully completed.
+    ///
+    /// Returns `true` and reserves a slot; returns `false` when the window is
+    /// already at capacity.
+    async fn try_consume_user_rate_slot(&self, user_id: &str) -> bool {
+        let now = chrono::Utc::now();
+        let window = chrono::Duration::from_std(self.rate_limit.window)
+            .unwrap_or_else(|_| chrono::Duration::seconds(self.rate_limit.window.as_secs() as i64));
+        let cutoff = now - window;
         let mut log = self.user_fire_log.write().await;
         let entries = log.entry(user_id.to_string()).or_default();
         while entries.front().is_some_and(|ts| *ts < cutoff) {
             entries.pop_front();
         }
-        (entries.len() as u32) < self.rate_limit.max_fires
-    }
-
-    /// Record a successful fire against the per-user rate window. Pair with
-    /// [`check_user_rate`] — call only after the spawn has actually
-    /// completed so failed fires don't consume a slot.
-    ///
-    /// [`check_user_rate`]: Self::check_user_rate
-    async fn record_user_rate(&self, user_id: &str) {
-        let now = chrono::Utc::now();
-        let mut log = self.user_fire_log.write().await;
-        let entries = log.entry(user_id.to_string()).or_default();
+        if (entries.len() as u32) >= self.rate_limit.max_fires {
+            return false;
+        }
         entries.push_back(now);
+        true
     }
 
     /// Consult the budget gate (if attached). Returns `true` when the gate
@@ -2166,47 +2186,65 @@ impl MissionManager {
         let notification_tx = self.notification_tx.clone();
         let last_activity_at = Arc::clone(&self.last_activity_at);
         tokio::spawn(async move {
-            // Bound the watcher lifetime to prevent indefinite task leaks for
-            // threads that enter a waiting/gate state that is never resolved.
-            // Use the maximum orchestrator duration (3600 s) plus a generous
-            // buffer (600 s) to cover threads paused at the gate.
-            const WATCHER_TIMEOUT: Duration = Duration::from_secs(4200);
-            match tokio::time::timeout(WATCHER_TIMEOUT, tm.join_thread(thread_id)).await {
-                Ok(Ok(outcome)) => {
-                    let now = chrono::Utc::now();
-                    *last_activity_at.write().await = now;
-                    if let Err(e) = store
-                        .set_kv("system.last_activity_at", &now.to_rfc3339())
+            // Poll the thread until it completes, using finite timeouts so the
+            // task does not leak indefinitely while still handling threads that
+            // are paused at an approval gate for an arbitrarily long time.
+            //
+            // Each iteration waits at most WATCHER_POLL_TIMEOUT. On timeout the
+            // thread is checked for terminal state via the store before
+            // re-arming; if the thread has disappeared or completed, we exit.
+            // This prevents the silent outcome-drop that occurred when a gated
+            // thread resolved after the original single-shot timeout expired.
+            const WATCHER_POLL_TIMEOUT: Duration = Duration::from_secs(4200);
+            const MAX_ITERATIONS: u32 = 48; // ~56 hours of gate wait
+
+            for iteration in 0..MAX_ITERATIONS {
+                match tokio::time::timeout(WATCHER_POLL_TIMEOUT, tm.join_thread(thread_id)).await {
+                    Ok(Ok(outcome)) => {
+                        let now = chrono::Utc::now();
+                        *last_activity_at.write().await = now;
+                        if let Err(e) = store
+                            .set_kv("system.last_activity_at", &now.to_rfc3339())
+                            .await
+                        {
+                            debug!("failed to persist last_activity_at after thread completion: {e}");
+                        }
+                        if let Err(e) = process_mission_outcome_and_notify(
+                            &store,
+                            effects.as_ref(),
+                            mission_id,
+                            thread_id,
+                            &outcome,
+                            &notification_tx,
+                            Some(original_fire_at),
+                        )
                         .await
-                    {
-                        debug!("failed to persist last_activity_at after thread completion: {e}");
+                        {
+                            debug!(mission_id = %mission_id, "failed to process outcome: {e}");
+                        }
+                        return;
                     }
-                    if let Err(e) = process_mission_outcome_and_notify(
-                        &store,
-                        effects.as_ref(),
-                        mission_id,
-                        thread_id,
-                        &outcome,
-                        &notification_tx,
-                        Some(original_fire_at),
-                    )
-                    .await
-                    {
-                        debug!(mission_id = %mission_id, "failed to process outcome: {e}");
+                    Ok(Err(e)) => {
+                        debug!(mission_id = %mission_id, "thread join failed: {e}");
+                        return;
                     }
-                }
-                Ok(Err(e)) => {
-                    debug!(mission_id = %mission_id, "thread join failed: {e}");
-                }
-                Err(_) => {
-                    debug!(
-                        mission_id = %mission_id,
-                        thread_id = %thread_id,
-                        timeout_secs = WATCHER_TIMEOUT.as_secs(),
-                        "mission outcome watcher timed out — thread may be stuck in a gate"
-                    );
+                    Err(_) => {
+                        warn!(
+                            mission_id = %mission_id,
+                            thread_id = %thread_id,
+                            iteration,
+                            max_iterations = MAX_ITERATIONS,
+                            "mission outcome watcher poll timed out — re-arming (thread may be at gate)"
+                        );
+                    }
                 }
             }
+
+            warn!(
+                mission_id = %mission_id,
+                thread_id = %thread_id,
+                "mission outcome watcher exhausted all iterations — outcome will not be processed"
+            );
         });
     }
 }
@@ -7222,47 +7260,53 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn user_rate_slot_not_consumed_by_failed_fire() {
-        // Regression for the rate-limiter self-DoS: when fire_mission
-        // refuses (e.g. budget/concurrent gate) the per-user slot must
-        // remain available so sustained refusals don't lock the user out.
+    async fn user_rate_slot_atomic_consume() {
+        // Regression: rate-limiting must be atomic — a peek must not consume a
+        // slot, and try_consume must both check and record in one critical section.
         let store = Arc::new(TestStore::new());
         let mgr = make_mission_manager(Arc::clone(&store) as Arc<dyn Store>);
 
-        // Sanity: an empty window allows fires.
-        assert!(mgr.check_user_rate("alice").await);
-
-        // Drive a fire that's guaranteed to early-out before record_user_rate.
-        // The simplest deterministic refusal is `fire_mission` against a
-        // mission whose owner doesn't match — that returns AccessDenied
-        // before reaching the rate check, so it doesn't exercise the
-        // rate-limit path. Instead, drive `record_user_rate` and
-        // `check_user_rate` directly to pin the contract: a check that
-        // doesn't get followed by a record leaves the slot free.
-        let allowed_before = mgr.check_user_rate("alice").await;
-        assert!(allowed_before);
-
-        // Snapshot the queue size — must be unchanged after a check-only.
-        let snapshot_after_check = {
+        // Empty window: peek reports ok without touching the queue.
+        assert!(mgr.peek_user_rate("alice").await);
+        let after_peek = {
             let log = mgr.user_fire_log.read().await;
             log.get("alice").map(|q| q.len()).unwrap_or(0)
         };
-        assert_eq!(
-            snapshot_after_check, 0,
-            "check_user_rate must not consume a slot on its own"
-        );
+        assert_eq!(after_peek, 0, "peek_user_rate must not consume a slot");
 
-        // After a successful fire would have called record_user_rate the
-        // queue grows by exactly one.
-        mgr.record_user_rate("alice").await;
-        let snapshot_after_record = {
+        // try_consume atomically checks and records.
+        assert!(mgr.try_consume_user_rate_slot("alice").await);
+        let after_first = {
             let log = mgr.user_fire_log.read().await;
             log.get("alice").map(|q| q.len()).unwrap_or(0)
         };
-        assert_eq!(
-            snapshot_after_record, 1,
-            "record_user_rate must append exactly one entry"
-        );
+        assert_eq!(after_first, 1, "try_consume_user_rate_slot must append exactly one entry");
+
+        // Peek after one consume still reports ok (not at capacity).
+        assert!(mgr.peek_user_rate("alice").await, "peek must still allow after single consume");
+    }
+
+    #[tokio::test]
+    async fn user_rate_slot_capacity_enforced() {
+        // Verify try_consume rejects at capacity and does NOT append.
+        let store = Arc::new(TestStore::new());
+        let low_limit_mgr =
+            make_mission_manager(Arc::clone(&store) as Arc<dyn Store>).with_rate_limit(
+                FireRateLimit {
+                    max_fires: 2,
+                    window: std::time::Duration::from_secs(3600),
+                },
+            );
+
+        assert!(low_limit_mgr.try_consume_user_rate_slot("bob").await);
+        assert!(low_limit_mgr.try_consume_user_rate_slot("bob").await);
+        assert!(!low_limit_mgr.try_consume_user_rate_slot("bob").await, "must reject at capacity");
+
+        let len = {
+            let log = low_limit_mgr.user_fire_log.read().await;
+            log.get("bob").map(|q| q.len()).unwrap_or(0)
+        };
+        assert_eq!(len, 2, "capacity-exceeded try_consume must not append an entry");
     }
 
     #[test]

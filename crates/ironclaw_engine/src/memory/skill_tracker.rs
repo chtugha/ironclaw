@@ -42,6 +42,16 @@ impl SkillTracker {
     /// back. Accepts `DocType::Skill` and `DocType::Plan`; returns
     /// `Err(EngineError::Skill)` for any other doc type, a missing doc, or
     /// invalid metadata — callers decide whether to propagate or log-and-swallow.
+    ///
+    /// # Concurrency note
+    ///
+    /// This is a load-modify-save operation without optimistic concurrency
+    /// control. Two concurrent calls for the same `doc_id` can both read the
+    /// same metric values and the last writer wins, causing one increment to be
+    /// lost. For the home-use target this is acceptable — confidence scores are
+    /// approximate heuristics and off-by-one counter drift has no material
+    /// impact. A full fix requires a store-level compare-and-swap API (tracked
+    /// as Step 21 in the implementation plan).
     pub async fn record_usage(&self, doc_id: DocId, success: bool) -> Result<(), EngineError> {
         let doc = self
             .store
