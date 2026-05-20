@@ -3357,6 +3357,58 @@ fn parse_outcome(result: &serde_json::Value) -> ThreadOutcome {
                     .and_then(|value| serde_json::from_value(value).ok()),
             }
         }
+        "need_authentication" => ThreadOutcome::GatePaused {
+            gate_name: "authentication".to_string(),
+            action_name: result
+                .get("action_name")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string(),
+            call_id: result
+                .get("call_id")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string(),
+            parameters: result
+                .get("parameters")
+                .cloned()
+                .unwrap_or(serde_json::json!({})),
+            resume_kind: crate::gate::ResumeKind::Authentication {
+                credential_name: ironclaw_common::CredentialName::new(
+                    result
+                        .get("credential_name")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("unknown_credential"),
+                )
+                .unwrap_or_else(|_| {
+                    ironclaw_common::CredentialName::new("unknown_credential").unwrap()
+                }),
+                instructions: String::new(),
+                auth_url: None,
+            },
+            resume_output: None,
+            paused_lease: None,
+        },
+        "need_approval" => ThreadOutcome::GatePaused {
+            gate_name: "approval".to_string(),
+            action_name: result
+                .get("action_name")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string(),
+            call_id: result
+                .get("call_id")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string(),
+            parameters: result
+                .get("parameters")
+                .cloned()
+                .unwrap_or(serde_json::json!({})),
+            resume_kind: crate::gate::ResumeKind::Approval { allow_always: false },
+            resume_output: None,
+            paused_lease: None,
+        },
         _ => ThreadOutcome::Completed { response: None },
     }
 }

@@ -1035,7 +1035,7 @@ def run_decomposition_loop(subtasks, original_goal, actions, config, state, resu
                 except Exception:
                     pass
             try:
-                _do_transition("stopped", "stopped by signal", config)
+                _do_transition("completed", "stopped by signal", config)
             except Exception:
                 pass
             return complete_result(state, "stopped")
@@ -1089,7 +1089,7 @@ def run_decomposition_loop(subtasks, original_goal, actions, config, state, resu
 def run_planning_phase(goal, actions, config, state):
     """Orchestrate the plan-selection logic. Returns (steps, source, docs).
 
-    source ∈ {"trivial", "cached", "template", "llm", "decompose", "failed"}.
+    source ∈ {"trivial", "cached", "template", "llm", "decompose", "depth_limit", "failed"}.
     docs is the list returned by __retrieve_docs__ for this goal, or None when
     retrieval was skipped (trivial path). Callers reuse docs to avoid a second
     store round-trip for knowledge injection at step 0.

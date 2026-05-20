@@ -2278,9 +2278,10 @@ impl MissionManager {
 
             /// Decrement the in-memory running-thread counter for `mission_id`
             /// by one, saturating at zero. A missing entry (counter not yet
-            /// seeded) is a no-op — the store-based fallback in
-            /// `count_running_threads` will compute the correct value when
-            /// next called.
+            /// seeded, e.g. a watcher spawned by `resume_recoverable_threads`
+            /// before the first `fire_mission` call) is a no-op; the seed
+            /// phase in the next `fire_mission` call will recount from the
+            /// store and insert the correct value.
             async fn decrement_running_count(
                 counts: &RwLock<HashMap<MissionId, usize>>,
                 mission_id: MissionId,
