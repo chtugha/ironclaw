@@ -31,6 +31,7 @@
 #   config   - thread config dict
 
 
+import json
 import re
 
 
@@ -1034,7 +1035,7 @@ def run_decomposition_loop(subtasks, original_goal, actions, config, state, resu
                 except Exception:
                     pass
             try:
-                _do_transition("completed", "stopped by signal", config)
+                _do_transition("stopped", "stopped by signal", config)
             except Exception:
                 pass
             return complete_result(state, "stopped")
@@ -1438,6 +1439,20 @@ def run_loop(context, goal, actions, state, config):
             active_skills = [s for s in active_skills if s.get("metadata", {}).get("name", "") in survivor_skill_names]
             docs = [d for d in docs if d.get("doc_id", d.get("title", "")) in survivor_doc_names]
 
+            guard_sys = guard_result.get("system_prompt", "")
+            if guard_sys and guard_sys != system_content:
+                for _msg in working_messages:
+                    if _msg.get("role") in ("System", "system"):
+                        _msg["content"] = guard_sys
+                        break
+            guard_hist = guard_result.get("conversation_history")
+            if guard_hist is not None and len(guard_hist) < len(reinit_hist):
+                _sys_only = [m for m in working_messages if m.get("role") in ("System", "system")]
+                working_messages[:] = _sys_only + [
+                    {"role": h["role"], "content": h["content"]} for h in guard_hist
+                ]
+                state["working_messages"] = working_messages
+
             if docs:
                 knowledge = format_docs(docs)
                 append_system_append(working_messages, knowledge)
@@ -1511,37 +1526,13 @@ def run_loop(context, goal, actions, state, config):
             })
             if not guard_result_gt0.get("fits", True):
                 __emit_event__("token_budget_warning", step=step)
-                surviving_hist = guard_result_gt0.get("conversation_history") or conv_hist_gt0
-                n_dropped = len(conv_hist_gt0) - len(surviving_hist)
-                if n_dropped > 0:
-                    sys_msgs = [m for m in working_messages if m.get("role") in ("System", "system")]
-                    last_user_idx = None
-                    for ri in range(len(non_sys_msgs) - 1, -1, -1):
-                        if non_sys_msgs[ri].get("role", "").lower() == "user":
-                            last_user_idx = ri
-                            break
-                    if last_user_idx is None:
-                        # No user message in the transcript (e.g. pure actions path with
-                        # only System / Assistant / ActionResult roles). Cannot safely drop
-                        # without an anchor; skip trimming to avoid emptying the history.
-                        pass
-                    else:
-                        surviving = []
-                        to_drop = n_dropped
-                        for mi, m in enumerate(non_sys_msgs):
-                            if to_drop > 0 and mi != last_user_idx and mi < last_user_idx:
-                                to_drop -= 1
-                            else:
-                                surviving.append(m)
-                        cleaned = []
-                        for si, sm in enumerate(surviving):
-                            if sm.get("role") in ("ActionResult", "action_result"):
-                                prev_role = cleaned[-1].get("role", "") if cleaned else ""
-                                if prev_role not in ("Assistant", "assistant", "ActionResult", "action_result"):
-                                    continue
-                            cleaned.append(sm)
-                        working_messages[:] = sys_msgs + cleaned
-                        state["working_messages"] = working_messages
+            surviving_hist_gt0 = guard_result_gt0.get("conversation_history")
+            if surviving_hist_gt0 is not None and len(surviving_hist_gt0) < len(conv_hist_gt0):
+                _sys_msgs_gt0_list = [m for m in working_messages if m.get("role") in ("System", "system")]
+                working_messages[:] = _sys_msgs_gt0_list + [
+                    {"role": h["role"], "content": h["content"]} for h in surviving_hist_gt0
+                ]
+                state["working_messages"] = working_messages
 
         # 4. Call LLM
         __emit_event__("step_started", step=step)

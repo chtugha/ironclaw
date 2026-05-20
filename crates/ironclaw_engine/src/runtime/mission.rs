@@ -731,6 +731,9 @@ impl MissionManager {
         self.last_fire_attempt.write().await.remove(&id);
         self.dedup_table.write().await.retain(|(mid, _), _| *mid != id);
         self.evict_event_regex(id).await;
+        // Also remove the running-thread counter so the HashMap doesn't grow
+        // unboundedly with entries for long-completed missions.
+        self.running_thread_counts.write().await.remove(&id);
         debug!(mission_id = %id, "mission completed");
         Ok(())
     }
@@ -823,21 +826,6 @@ impl MissionManager {
             }
         }
 
-        // max_concurrent: count threads from this mission that are still in
-        // a non-terminal state. 0 = unlimited.
-        if mission.max_concurrent > 0 {
-            let running = self.count_running_threads(&mission).await;
-            if running >= mission.max_concurrent as usize {
-                debug!(
-                    mission_id = %id,
-                    running,
-                    max_concurrent = mission.max_concurrent,
-                    "mission max_concurrent reached"
-                );
-                return Ok(None);
-            }
-        }
-
         // Per-user global rate limit. Independent of per-mission cooldown,
         // this is a sliding-window cap across *all* of the user's missions
         // so a user with many event-triggered missions can't collectively
@@ -902,10 +890,72 @@ impl MissionManager {
         let meta_prompt =
             build_meta_prompt(&mission, &project_docs, &trigger_payload, &context_blocks);
 
+        // max_concurrent: atomically check and reserve a thread slot before
+        // spawning. By combining the gate check and counter increment under a
+        // single write lock, two concurrent fire_mission callers cannot both
+        // observe a count below max_concurrent and both proceed to spawn —
+        // only one can hold the write lock at a time.
+        //
+        // Guard: only maintained when max_concurrent > 0. For unlimited
+        // missions the counter is never consulted and maintaining it would
+        // create a phantom balance that confuses watchers installed by
+        // `resume_recoverable_threads` (which never increment the counter,
+        // so their decrements would under-count).
+        if mission.max_concurrent > 0 {
+            // Seed the counter if not yet present (first call after startup
+            // for this mission). Done outside the check+increment write lock
+            // because the store scan is async and we cannot hold the lock
+            // across an await point. `or_insert` prevents concurrent seeders
+            // from overwriting each other.
+            {
+                let has_entry = self.running_thread_counts.read().await.contains_key(&id);
+                if !has_entry {
+                    let mut running = 0usize;
+                    for tid in mission.thread_history.iter().rev() {
+                        match self.store.load_thread(*tid).await {
+                            Ok(Some(t))
+                                if !matches!(
+                                    t.state,
+                                    ThreadState::Done | ThreadState::Failed
+                                ) =>
+                            {
+                                running += 1;
+                            }
+                            _ => {}
+                        }
+                    }
+                    self.running_thread_counts
+                        .write()
+                        .await
+                        .entry(id)
+                        .or_insert(running);
+                }
+            }
+            // Atomic check-and-increment: both read and write happen under the
+            // same write lock so no concurrent caller can interleave between them.
+            {
+                let mut counts = self.running_thread_counts.write().await;
+                let entry = counts.entry(id).or_insert(0);
+                if *entry >= mission.max_concurrent as usize {
+                    debug!(
+                        mission_id = %id,
+                        running = *entry,
+                        max_concurrent = mission.max_concurrent,
+                        "mission max_concurrent reached"
+                    );
+                    return Ok(None);
+                }
+                *entry += 1;
+            }
+        }
+
         // Spawn thread with meta-prompt as initial user message.
         // `title = mission.name` so the sidebar shows the short label
         // instead of the multi-paragraph meta-prompt (which is `goal`).
-        let thread_id = self
+        //
+        // If the spawn fails we must roll back the counter increment above so
+        // the max_concurrent gate remains accurate for subsequent calls.
+        let thread_id = match self
             .thread_manager
             .spawn_thread_with_title(
                 &meta_prompt,
@@ -916,7 +966,19 @@ impl MissionManager {
                 None,
                 user_id,
             )
-            .await?;
+            .await
+        {
+            Ok(tid) => tid,
+            Err(e) => {
+                if mission.max_concurrent > 0 {
+                    let mut counts = self.running_thread_counts.write().await;
+                    if let Some(n) = counts.get_mut(&id) {
+                        *n = n.saturating_sub(1);
+                    }
+                }
+                return Err(e);
+            }
+        };
 
         // Capture the fire instant once and use it for both the persisted
         // `last_fire_at` and the in-memory `last_fire_attempt` map. The two
@@ -926,22 +988,6 @@ impl MissionManager {
         // microsecond drift that breaks the equality check on the success
         // path.
         let fire_instant = chrono::Utc::now();
-
-        // Increment the in-memory running-thread counter BEFORE installing the
-        // outcome watcher. The watcher task may execute on a separate OS thread
-        // and could call `decrement_running_count` before we reach the increment
-        // below (especially in tests where MockLlm returns immediately). By
-        // incrementing first we guarantee the counter never goes negative due
-        // to a decrement racing ahead of the increment.
-        //
-        // Guard: only maintain the counter when max_concurrent enforcement is
-        // active (> 0). For unlimited missions the counter is never consulted
-        // and maintaining it would create a phantom balance that confuses
-        // watchers installed by `resume_recoverable_threads` (which never
-        // increment the counter, so their decrements would under-count).
-        if mission.max_concurrent > 0 {
-            *self.running_thread_counts.write().await.entry(id).or_insert(0) += 1;
-        }
 
         // Install the outcome watcher *before* persisting the mission update.
         // The watcher only depends on `thread_id` (it joins via ThreadManager
@@ -1215,8 +1261,11 @@ impl MissionManager {
             }
 
             // Dedup: skip if an identical event key fired this mission within
-            // its dedup window. The default key is the SHA-256 of the payload
-            // serialization (compact and stable for typical webhook bodies).
+            // its dedup window. The key is a 64-bit non-cryptographic hash of
+            // the compact JSON serialization of the payload. Collision
+            // probability (~1/2^64 per event pair) is acceptable for a
+            // dedup window. The dedup table is in-memory so it resets on
+            // restart — this is intentional (dedup is best-effort).
             if mission.dedup_window_secs > 0 {
                 let key = payload_dedup_key(payload.as_ref());
                 if self.dedup_event(mid, &key, mission.dedup_window_secs).await {
@@ -2030,55 +2079,6 @@ impl MissionManager {
         Ok(spawned)
     }
 
-    /// Count threads spawned by `mission` that are still in a non-terminal
-    /// state (anything other than `Done`/`Failed`). Used by `max_concurrent`
-    /// enforcement.
-    ///
-    /// **Fast path (O(1)):** reads the in-memory `running_thread_counts` counter
-    /// when it has already been seeded for this mission. The counter is
-    /// incremented by `fire_mission` after each successful spawn and decremented
-    /// by `spawn_mission_outcome_watcher` when the thread completes.
-    ///
-    /// **Slow path (fallback):** if the counter has not yet been seeded (e.g.
-    /// after process restart, or for missions that have never been fired since
-    /// startup), load each thread from the store to count non-terminal ones, then
-    /// seed the in-memory counter so subsequent calls use the fast path.
-    async fn count_running_threads(&self, mission: &Mission) -> usize {
-        // Fast path: counter already seeded for this mission.
-        {
-            let counts = self.running_thread_counts.read().await;
-            if let Some(&count) = counts.get(&mission.id) {
-                return count;
-            }
-        }
-
-        // Slow path: first call after startup; scan the store and seed the counter.
-        let mut running = 0;
-        for tid in mission.thread_history.iter().rev() {
-            match self.store.load_thread(*tid).await {
-                Ok(Some(thread)) => {
-                    if !matches!(thread.state, ThreadState::Done | ThreadState::Failed) {
-                        running += 1;
-                    }
-                }
-                _ => continue,
-            }
-        }
-        // Use `or_insert` rather than `insert` to avoid overwriting a counter
-        // value that was written by a concurrent `fire_mission` between the
-        // fast-path read-lock release and this write-lock acquisition. If
-        // another task already seeded (and possibly incremented) the counter,
-        // we leave it untouched; a slightly stale `running` from our store
-        // scan is still safe — the next fast-path call will see the current
-        // value and the max_concurrent enforcement tolerates this narrow gap.
-        self.running_thread_counts
-            .write()
-            .await
-            .entry(mission.id)
-            .or_insert(running);
-        running
-    }
-
     /// Returns `true` if `(mission_id, dedup_key)` was last seen within
     /// `window_secs`. Updates the table to record `now` for the next call.
     ///
@@ -2340,7 +2340,25 @@ impl MissionManager {
                 thread_id = %thread_id,
                 "mission outcome watcher exhausted all iterations — outcome will not be processed"
             );
-            decrement_running_count(&running_thread_counts, mission_id).await;
+            // Only decrement if the thread has actually reached a terminal
+            // state. If it is still running (e.g. permanently stuck at a
+            // gate), keeping the counter inflated prevents the max_concurrent
+            // gate from issuing new threads while the stuck one occupies a
+            // slot. The stuck thread's outcome will never be processed unless
+            // the operator manually intervenes.
+            let is_terminal = match store.load_thread(thread_id).await {
+                Ok(Some(t)) => matches!(t.state, ThreadState::Done | ThreadState::Failed),
+                _ => true,
+            };
+            if is_terminal {
+                decrement_running_count(&running_thread_counts, mission_id).await;
+            } else {
+                warn!(
+                    mission_id = %mission_id,
+                    thread_id = %thread_id,
+                    "thread is still non-terminal after watcher exhaustion — counter NOT decremented to preserve max_concurrent gate"
+                );
+            }
         });
     }
 
