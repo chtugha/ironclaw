@@ -1,14 +1,11 @@
 ---
 title: Inference Providers
-description: IronClaw readily supports multiple LLM providers
+description: IronClaw supports local and cloud LLM providers
 ---
 
-IronClaw supports multiple LLM providers out of the box, including NEAR AI , Anthropic, OpenAI, Google Gemini, GitHub Copilot, Ollama, AWS Bedrock, and any OpenAI-compatible endpoint.
+IronClaw supports many LLM providers out of the box. **For home use, Ollama is recommended** — it runs entirely on your hardware with no API key or cloud account required.
 
-Providers can be configured via environment variables or the onboarding wizard. IronClaw's modular architecture allows seamless integration with new providers by implementing the `LLMProvider` trait.
-
-#### Configuring a Provider
-To config a new provider, simply run the onboarding wizard:
+Providers can be configured via environment variables or the onboarding wizard:
 
 ```bash
 ironclaw onboard --provider-only
@@ -16,31 +13,86 @@ ironclaw onboard --provider-only
 
 ---
 
-## Provider Overview
+## Local Providers (Recommended for Home Use)
 
-| Provider              | Backend value       | Requires API key       | Notes                           |
-|-----------------------|---------------------|------------------------|---------------------------------|
-| NEAR AI               | `nearai`            | OAuth (browser)        | Multi-model                     |
-| Anthropic             | `anthropic`         | `ANTHROPIC_API_KEY`    | Claude models                   |
-| OpenAI                | `openai`            | `OPENAI_API_KEY`       | GPT models                      |
-| Google Gemini         | `gemini_oauth`      | OAuth (browser)        | Gemini models; function calling |
-| io.net                | `ionet`             | `IONET_API_KEY`        | Intelligence API                |
-| Mistral               | `mistral`           | `MISTRAL_API_KEY`      | Mistral models                  |
-| Yandex AI Studio      | `yandex`            | `YANDEX_API_KEY`       | YandexGPT models                |
-| MiniMax               | `minimax`           | `MINIMAX_API_KEY`      | MiniMax-M2.7 models             |
-| Cloudflare Workers AI | `cloudflare`        | `CLOUDFLARE_API_KEY`   | Access to Workers AI            |
-| GitHub Copilot        | `github_copilot`    | `GITHUB_COPILOT_TOKEN` | Multi-models                    |
-| Ollama                | `ollama`            | No                     | Local inference                 |
-| AWS Bedrock           | `bedrock`           | AWS credentials        | Native Converse API             |
-| OpenRouter            | `openai_compatible` | `LLM_API_KEY`          | 300+ models                     |
-| Together AI           | `openai_compatible` | `LLM_API_KEY`          | Fast inference                  |
-| Fireworks AI          | `openai_compatible` | `LLM_API_KEY`          | Fast inference                  |
-| vLLM / LiteLLM        | `openai_compatible` | Optional               | Self-hosted                     |
-| LM Studio             | `openai_compatible` | No                     | Local GUI                       |
+For home use with a consumer GPU or CPU, start here. These providers run on your own hardware.
+
+### Ollama (easiest)
+
+Install Ollama from [ollama.com](https://ollama.com), pull a model, then configure:
+
+```env
+LLM_BACKEND=ollama
+OLLAMA_MODEL=llama3.2
+# OLLAMA_BASE_URL=http://localhost:11434   # default
+```
+
+```bash
+# Pull models
+ollama pull llama3.2          # 3B, fast, ~2 GB
+ollama pull qwen2.5:7b        # 7B, good reasoning, ~5 GB
+ollama pull qwen2.5:14b       # 14B, best quality, ~9 GB
+```
+
+IronClaw auto-detects Ollama as a local backend and enables the compact **Tier 0 system prompt** (≤ 800 tokens).
+
+### LM Studio
+
+Start LM Studio's local server (default port 1234):
+
+```env
+LLM_BACKEND=openai_compatible
+LLM_BASE_URL=http://localhost:1234/v1
+LLM_MODEL=llama-3.2-3b-instruct-q4_K_M
+# LLM_API_KEY is not required for LM Studio
+```
+
+### vLLM, llama.cpp, Kobold, etc.
+
+Any server exposing an OpenAI-compatible API at a loopback address is auto-detected as local:
+
+```env
+LLM_BACKEND=openai_compatible
+LLM_BASE_URL=http://localhost:8000/v1
+LLM_API_KEY=none
+LLM_MODEL=your-model-name
+```
+
+### Marking a custom server as local
+
+If your server is on a non-loopback address (e.g. a home server at `192.168.1.100`), mark it as local explicitly via the Settings UI: **Settings → Providers → your provider → Local model (checkbox)**.
+
+When marked as local, IronClaw uses the Tier 0 compact prompt regardless of address.
 
 ---
 
-## NEAR AI
+## Provider Overview
+
+| Provider              | Backend value       | Requires API key       | Local? | Notes                           |
+|-----------------------|---------------------|------------------------|--------|---------------------------------|
+| Ollama                | `ollama`            | No                     | ✅     | Recommended for home use        |
+| LM Studio             | `openai_compatible` | No                     | ✅     | Local GUI                       |
+| vLLM / LiteLLM        | `openai_compatible` | Optional               | ✅     | Self-hosted                     |
+| Anthropic             | `anthropic`         | `ANTHROPIC_API_KEY`    | ❌     | Claude models                   |
+| OpenAI                | `openai`            | `OPENAI_API_KEY`       | ❌     | GPT models                      |
+| Google Gemini         | `gemini_oauth`      | OAuth (browser)        | ❌     | Gemini models; function calling |
+| GitHub Copilot        | `github_copilot`    | `GITHUB_COPILOT_TOKEN` | ❌     | Multi-models                    |
+| Mistral               | `mistral`           | `MISTRAL_API_KEY`      | ❌     | Mistral models                  |
+| MiniMax               | `minimax`           | `MINIMAX_API_KEY`      | ❌     | MiniMax-M2.7 models             |
+| io.net                | `ionet`             | `IONET_API_KEY`        | ❌     | Intelligence API                |
+| Yandex AI Studio      | `yandex`            | `YANDEX_API_KEY`       | ❌     | YandexGPT models                |
+| Cloudflare Workers AI | `cloudflare`        | `CLOUDFLARE_API_KEY`   | ❌     | Access to Workers AI            |
+| AWS Bedrock           | `bedrock`           | AWS credentials        | ❌     | Native Converse API             |
+| OpenRouter            | `openai_compatible` | `LLM_API_KEY`          | ❌     | 300+ models                     |
+| Together AI           | `openai_compatible` | `LLM_API_KEY`          | ❌     | Fast inference                  |
+| Fireworks AI          | `openai_compatible` | `LLM_API_KEY`          | ❌     | Fast inference                  |
+| NEAR AI               | `nearai`            | OAuth (browser)        | ❌     | Multi-model cloud               |
+
+---
+
+## Cloud Providers
+
+### NEAR AI
 
 ```env
 NEARAI_MODEL=claude-3-5-sonnet-20241022
@@ -51,7 +103,7 @@ Popular models: `Qwen/Qwen3.5-122B-A10B`, `black-forest-labs/FLUX.2-klein-4B`, `
 
 ---
 
-## Anthropic (Claude)
+### Anthropic (Claude)
 
 ```env
 LLM_BACKEND=anthropic
@@ -62,7 +114,7 @@ Popular models: `claude-sonnet-4-20250514`, `claude-3-5-sonnet-20241022`, `claud
 
 ---
 
-## OpenAI (GPT)
+### OpenAI (GPT)
 
 ```env
 LLM_BACKEND=openai
@@ -73,7 +125,7 @@ Popular models: `gpt-4o`, `gpt-4o-mini`, `o3-mini`
 
 ---
 
-## Google Gemini (OAuth)
+### Google Gemini (OAuth)
 
 Uses Google OAuth with PKCE (S256) for authentication — no API key required.
 On first run, a browser opens for Google account login. Credentials (including
@@ -84,7 +136,7 @@ LLM_BACKEND=gemini_oauth
 GEMINI_MODEL=gemini-2.5-flash
 ```
 
-### Supported features
+#### Supported features
 
 | Feature            | Status | Notes                                                                                         |
 |--------------------|--------|-----------------------------------------------------------------------------------------------|
@@ -95,7 +147,7 @@ GEMINI_MODEL=gemini-2.5-flash
 | SSE streaming      | ✅      | Cloud Code API with `streamGenerateContent?alt=sse`                                           |
 | Token refresh      | ✅      | Automatic via refresh token                                                                   |
 
-### Popular models
+#### Popular models
 
 | Model                       | ID                                   | Notes                       |
 |-----------------------------|--------------------------------------|-----------------------------|
@@ -108,7 +160,7 @@ GEMINI_MODEL=gemini-2.5-flash
 | Gemini 2.5 Flash            | `gemini-2.5-flash`                   | Fast, good quality          |
 | Gemini 2.5 Flash Lite       | `gemini-2.5-flash-lite`              | Fastest, lightweight        |
 
-### Cloud Code API vs standard API
+#### Cloud Code API vs standard API
 
 Models containing `-preview` (with hyphen) or `gemini-3` in the name, as well
 as any `gemini-` model with major version >= 2, route through the Cloud Code
@@ -118,7 +170,7 @@ API (`generativelanguage.googleapis.com`).
 
 ---
 
-## GitHub Copilot
+### GitHub Copilot
 
 GitHub Copilot exposes chat endpoint at
 `https://api.githubcopilot.com`. IronClaw uses that endpoint directly through the
@@ -146,21 +198,7 @@ VS Code identity headers (`User-Agent`, `Editor-Version`, `Editor-Plugin-Version
 
 ---
 
-## Ollama (local)
-
-Install Ollama from [ollama.com](https://ollama.com), pull a model, then:
-
-```env
-LLM_BACKEND=ollama
-OLLAMA_MODEL=llama3.2
-# OLLAMA_BASE_URL=http://localhost:11434   # default
-```
-
-Pull a model first: `ollama pull llama3.2`
-
----
-
-## MiniMax
+### MiniMax
 
 [MiniMax](https://platform.minimax.io) provides high-performance language models with 204,800 token context windows.
 
@@ -179,7 +217,7 @@ MINIMAX_BASE_URL=https://api.minimaxi.com/v1
 
 ---
 
-## AWS Bedrock (requires `--features bedrock`)
+### AWS Bedrock (requires `--features bedrock`)
 
 Uses the native AWS Converse API via `aws-sdk-bedrockruntime`. Supports standard AWS
 authentication methods: IAM credentials, SSO profiles, and instance roles.
@@ -189,8 +227,6 @@ authentication methods: IAM credentials, SSO profiles, and instance roles.
 > - macOS: `brew install cmake`
 > - Ubuntu/Debian: `sudo apt install cmake`
 > - Fedora: `sudo dnf install cmake`
-
-### With AWS credentials (IAM, SSO, instance roles)
 
 ```env
 LLM_BACKEND=bedrock
@@ -204,7 +240,7 @@ The AWS SDK credential chain automatically resolves credentials from environment
 variables (`AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`), shared credentials file
 (`~/.aws/credentials`), SSO profiles, and EC2/ECS instance roles.
 
-### Cross-region inference
+#### Cross-region inference
 
 Set `BEDROCK_CROSS_REGION` to route requests across AWS regions for capacity:
 
@@ -216,7 +252,7 @@ Set `BEDROCK_CROSS_REGION` to route requests across AWS regions for capacity:
 | `global`  | All commercial AWS regions                   |
 | _(unset)_ | Single-region only                           |
 
-### Popular Bedrock model IDs
+#### Popular Bedrock model IDs
 
 | Model             | ID                                          |
 |-------------------|---------------------------------------------|
@@ -286,33 +322,13 @@ LLM_API_KEY=fw_...
 LLM_MODEL=accounts/fireworks/models/llama4-maverick-instruct-basic
 ```
 
-### vLLM / LiteLLM (self-hosted)
+### LiteLLM proxy
 
-For self-hosted inference servers:
-
-```env
-LLM_BACKEND=openai_compatible
-LLM_BASE_URL=http://localhost:8000/v1
-LLM_API_KEY=token-abc123        # set to any string if auth is not configured
-LLM_MODEL=meta-llama/Llama-3.1-8B-Instruct
-```
-
-LiteLLM proxy (forwards to any backend, including Bedrock, Vertex, Azure):
+LiteLLM forwards to any backend (Bedrock, Vertex, Azure, etc.):
 
 ```env
 LLM_BACKEND=openai_compatible
 LLM_BASE_URL=http://localhost:4000/v1
 LLM_API_KEY=sk-...
 LLM_MODEL=gpt-4o                 # as configured in litellm config.yaml
-```
-
-### LM Studio (local GUI)
-
-Start LM Studio's local server, then:
-
-```env
-LLM_BACKEND=openai_compatible
-LLM_BASE_URL=http://localhost:1234/v1
-LLM_MODEL=llama-3.2-3b-instruct-q4_K_M
-# LLM_API_KEY is not required for LM Studio
 ```

@@ -4,102 +4,266 @@ description: "Configure your agent's main settings"
 icon: cog
 ---
 
-The `onboard` command allows you to configure multiple settings of your agent at once, including your inference provider, LLM, tunnels, and channels. It provides a guided experience to help you set up your agent in minutes.
+The `onboard` command walks you through the initial setup of IronClaw — database, LLM provider, secrets, and optional features. It runs automatically the first time you start IronClaw, or you can re-run it at any time to change a setting.
 
 <Note>
-If you haven't set up your agent yet, follow our [Quickstart guide](/quickstart)
+New to IronClaw? Follow the [Quickstart guide](/quickstart) first — it covers the fastest path to a running local agent.
 </Note>
-
-<Danger>
-If you are new to IronClaw, we recommend you to configure [channels](/channels/telegram), tools, and other settings one at a time instead of 
-all at once through the `onboard` command.
-</Danger>
 
 ---
 
-## Onboarding Wizard
-
-If you are new to IronClaw, we recommend you to configure channels, tools, and other settings one at a time instead of all at once through the onboard command.
-
-<Steps>
-
-<Step title="Start the Onboarding Wizard">
-
-To start the onboarding wizard, run the following command in your terminal:
+## Starting the Wizard
 
 ```bash
 ironclaw onboard
 ```
 
-</Step>
+Or for provider changes only:
 
-<Step title="Select the Database">
+```bash
+ironclaw onboard --provider-only
+```
 
-IronClaw supports two database backends: **PostgreSQL** (default, recommended for production) and **libSQL** (embedded SQLite, zero-config). The wizard will guide you through setup — see the [Database Backends](/capabilities/database) page for details.
+---
+
+## Wizard Steps
+
+<Steps>
+
+<Step title="Database Backend">
+
+IronClaw supports two database backends:
+
+| Backend | Best for | Setup |
+|---------|---------|-------|
+| **libSQL** (embedded) | Home use, single user | Zero-config — data lives in `~/.ironclaw/data/` |
+| **PostgreSQL** | Servers, multi-user | Requires a running PostgreSQL 15+ instance |
+
+**For home use, choose libSQL.** No installation or configuration needed.
+
+For PostgreSQL, provide the connection string:
+
+```
+DATABASE_URL=postgres://ironclaw:password@localhost:5432/ironclaw
+```
+
+You can also set `IRONCLAW_PROFILE=local` in `~/.ironclaw/.env` to pre-select libSQL without going through the wizard:
+
+```bash
+echo "IRONCLAW_PROFILE=local" >> ~/.ironclaw/.env
+```
 
 </Step>
 
 <Step title="Secrets Management">
 
-Choose were to store your master secrets key, which is used to encrypt all your credentials.
+IronClaw encrypts all stored credentials with AES-256-GCM. The master encryption key must be stored somewhere:
 
-The recommended option is to use the system's keyring, but if you are running in an environment without a keyring (like a server or a container), prefer to store the master key in an environment variable
+| Option | Best for | Notes |
+|--------|---------|-------|
+| **System keychain** | Desktop / laptop | Recommended — key never touches disk |
+| **Environment variable** | Headless servers, Docker | Set `IRONCLAW_MASTER_KEY=<hex-64-chars>` |
+
+For a headless setup, generate a key:
+
+```bash
+# Generate a secure 256-bit key
+openssl rand -hex 32
+# Add to ~/.ironclaw/.env or your container's env
+echo "IRONCLAW_MASTER_KEY=<output-above>" >> ~/.ironclaw/.env
+```
 
 </Step>
 
 <Step title="Inference Provider and LLM">
 
-Built-in providers include Anthropic, OpenAI, Google Gemini, MiniMax, Mistral, and Ollama (local).
+IronClaw supports many providers. For home use, **Ollama** (local) is recommended — no API key, no cost, runs entirely on your hardware.
 
-We recommend using [NEAR AI](https://cloud.near.ai/) as your inference provider for maximum privacy and security, and the `Qwen3-30B` model to start for its cost-effectiveness.
+**Ollama (recommended for home use)**
+
+First make sure Ollama is installed and a model is pulled:
+
+```bash
+ollama pull llama3.2       # lightweight, fast
+ollama pull qwen2.5:14b   # better reasoning, needs 10 GB RAM
+```
+
+Then in the wizard, select `ollama` and enter your model name.
+
+Environment variables (equivalent to wizard answers):
+
+```env
+LLM_BACKEND=ollama
+OLLAMA_MODEL=llama3.2
+```
+
+**OpenAI-compatible (LM Studio, vLLM, llama.cpp)**
+
+If you run your own OpenAI-compatible inference server:
+
+```env
+LLM_BACKEND=openai_compatible
+LLM_BASE_URL=http://localhost:1234/v1
+LLM_MODEL=your-model-name
+```
+
+**Cloud providers (optional, require API keys)**
+
+| Provider | Backend value | Key variable |
+|---------|--------------|-------------|
+| Anthropic | `anthropic` | `ANTHROPIC_API_KEY` |
+| OpenAI | `openai` | `OPENAI_API_KEY` |
+| Mistral | `mistral` | `MISTRAL_API_KEY` |
+| OpenRouter | `openai_compatible` | `LLM_API_KEY` |
+
+See [LLM Providers](/capabilities/llm-providers) for the full list.
+
+<Note>
+IronClaw automatically detects Ollama and loopback addresses as local backends and switches to the compact **Tier 0 system prompt** (≤ 800 tokens) to conserve context space.
+</Note>
 
 </Step>
 
-<Step title="Enable Semantics">
+<Step title="Enable Semantic Memory (optional)">
 
-Embeddings enable semantic search in your workspace memory, we recommend enabling it.
+Embedding-based semantic search lets IronClaw recall past notes and context by meaning, not just keyword. It requires an embedding model.
 
-</Step>
+With Ollama, pull `nomic-embed-text`:
 
-<Step title="Configure Tunnel & Channels">
+```bash
+ollama pull nomic-embed-text
+```
 
-Tunnels are used to securely expose your agent's API to the internet, which is required for channels to work. We recommend using [ngrok](https://dashboard.ngrok.com/) for its ease of use and reliability.
+Then in the wizard, enable embeddings and set the model to `nomic-embed-text`.
 
-After configuring your tunnel, you can select which channels you want to enable for your agent, so it can listen and respond to messages from, for example, Telegram, Slack, or Discord. 
+Equivalent settings:
 
-You can always add more channels later.
+```env
+EMBEDDING_ENABLED=true
+EMBEDDING_MODEL=nomic-embed-text
+```
 
-</Step>
-
-<Step title="Tools / Extensions">
-
-You can configure which tools and extensions you want to enable for your agent. They are used by the agent to perform actions, like searching the web, reading and sending emails, using github, and more.
-
-You can always add more tools and extensions later.
-
-</Step>
-
-<Step title="Docker Sandboxing">
-
-IronClaw can execute code, run builds, and use tools inside Docker
-containers. This keeps your system safe -- commands from the LLM run
-in an isolated sandbox with no access to your credentials, limited
-filesystem access, and network traffic restricted to an allowlist.
-
-<Info>
-
-If you are running IronClaw in an environment without Docker (like a server or a container), you can disable sandboxing
-</Info>
+Semantic memory is optional — keyword search works without it.
 
 </Step>
 
-<Step title="Background Tasks">
+<Step title="Token Budget">
 
-Heartbeat runs periodic background tasks (e.g., checking your calendar,
-monitoring for notifications, running scheduled workflows).
+For local LLMs the context window is limited. The wizard lets you set the total prompt token budget. The default (8 192) works for most local models.
 
-We recommend enabling it to unlock the full potential of your agent, but you can always disable it later if you prefer.
+If your model supports a larger context (e.g. 32K), you can raise the limit in `~/.ironclaw/config.toml`:
+
+```toml
+[agent]
+max_prompt_tokens = 32768
+
+[skills]
+max_context_tokens = 4096
+```
+
+The skill context budget must always be less than or equal to `max_prompt_tokens`.
+
+See [Token Budget](/capabilities/token-budget) for details on how IronClaw uses this budget.
+
+</Step>
+
+<Step title="Tools and Extensions">
+
+IronClaw bundles a `home` tool bundle enabled by default. These are all local tools — no cloud accounts needed:
+
+| Tool | What it does | Additional setup |
+|------|-------------|-----------------|
+| **Browser** (Playwright MCP) | Browse websites, take screenshots | Install `node` + `npx playwright install chromium` |
+| **Local Notes** | Append and read a notes file at `~/.ironclaw/notes.md` | None |
+| **Local Search** | Search files in the current workspace | None |
+| **CalDAV** | Read/write calendar events | Provide `CALDAV_URL`, username, password |
+
+**Browser tool setup:**
+
+```bash
+# Requires Node.js 18+: https://nodejs.org
+npm install -g @playwright/test
+npx playwright install chromium
+```
+
+**CalDAV setup:**
+
+```env
+CALDAV_URL=https://your-caldav-server/dav/
+CALDAV_USERNAME=your-username
+CALDAV_PASSWORD=your-password
+```
+
+Cloud-only tools (Gmail, Google Calendar, Slack, Composio) have been removed from the default bundle. They can be installed manually as opt-in extensions.
+
+</Step>
+
+<Step title="Routines and Background Tasks">
+
+IronClaw can run tasks on a schedule or when the system is idle.
+
+**Idle missions** — fire when the system has been quiet for a configurable number of seconds. Useful for background housekeeping (indexing new files, syncing notes, etc.).
+
+**Cron missions** — fire on a cron schedule (e.g. every morning at 8am).
+
+Both are enabled in the `local` profile. You can manage routines from the TUI or web UI.
 
 </Step>
 
 </Steps>
+
+---
+
+## After Onboarding
+
+Your settings are saved to:
+
+| Location | Contains |
+|----------|---------|
+| `~/.ironclaw/.env` | Bootstrap variables (profile, database URL, LLM backend) |
+| `~/.ironclaw/config.toml` | Fine-grained settings (token budget, skill limits, etc.) |
+| Database | Runtime settings (provider details, routines, memory) |
+
+To change any setting later, re-run `ironclaw onboard` or edit the files directly. Changes to `~/.ironclaw/.env` take effect on the next restart.
+
+---
+
+## Troubleshooting
+
+**Ollama not found after wizard completes**
+
+Make sure Ollama is running:
+
+```bash
+ollama serve    # or start the Ollama app
+curl http://localhost:11434/api/tags
+```
+
+**Model not responding / very slow**
+
+- Check available RAM — if the model is larger than free RAM, it spills to disk and becomes very slow
+- Try a smaller model: `ollama pull llama3.2` (3B, ~2 GB)
+- Check GPU usage: `nvidia-smi` (NVIDIA) or Activity Monitor → GPU History (macOS)
+
+**"Master key not found" on startup**
+
+The keychain entry may have been deleted. Re-run the wizard to set a new key:
+
+```bash
+ironclaw onboard
+```
+
+Or set the `IRONCLAW_MASTER_KEY` environment variable directly.
+
+**Skills not activating**
+
+Skills with `max_context_tokens: 0` are excluded from injection. Check your skill's `SKILL.md` frontmatter:
+
+```yaml
+---
+activation:
+  max_context_tokens: 256   # must be > 0
+  keywords:
+    - deploy
+---
+```

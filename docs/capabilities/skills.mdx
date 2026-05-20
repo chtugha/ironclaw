@@ -3,11 +3,9 @@ title: Skills
 description: Prompt extensions that activate based on context
 ---
 
-Skills are markdown files that contain domain-specific instructions. When a skill activates, its markdown body is injected into the LLM context — giving the agent specialized knowledge and behavior without retraining.
+Skills are markdown files that contain domain-specific instructions. When a skill activates, its markdown body is injected into the LLM context — giving the agent specialised knowledge and behaviour without retraining.
 
-<Tip>
-IronClaw can search and install skills from the ClawHub registry, a community-driven repository of pre-built skills covering various domains and use cases.
-</Tip>
+Skills are designed with local LLMs in mind: each skill declares a **token budget cap** and is excluded from injection if its budget is zero or unset. The total skill injection budget defaults to **2 048 tokens** (configurable).
 
 ---
 
@@ -18,7 +16,7 @@ A skill is a self-contained expertise module. It defines:
 - **When to activate** — patterns, keywords, and regex that match incoming messages
 - **What to inject** — a markdown body with instructions, examples, and domain knowledge
 - **What tools to require** — binaries, environment variables, and configuration needed
-- **How much context to use** — a token budget cap per activation
+- **How much context to use** — a `max_context_tokens` budget cap per activation
 
 Skills are evaluated on every turn. The agent selects the most relevant skills that fit within the prompt budget and injects them before the LLM reasons about the request.
 
@@ -29,6 +27,10 @@ Skills are evaluated on every turn. The agent selects the most relevant skills t
 Skills pass through four stages before injection:
 
 <Steps>
+  <Step title="Zero-Budget Filter">
+    Skills with `max_context_tokens: 0` (or no declared budget) are excluded **before** scoring begins. A startup warning is emitted for any skill with a missing or zero budget. This ensures skills are always explicit about their memory footprint.
+  </Step>
+
   <Step title="Gate">
     Check that all prerequisites are met: required binaries exist on `PATH`, required environment variables are set, required configuration is present. Skills that fail gating are skipped entirely — they never score or consume budget.
   </Step>
@@ -39,7 +41,7 @@ Skills pass through four stages before injection:
     Scoring is fully deterministic — no LLM involved. A skill must declare its activation criteria in the frontmatter so the scorer knows what to match.
 
     <Warning>
-    A skill without an `activation` block scores zero on every message and is never injected.
+    A skill without an `activation` block scores zero on every message and is never injected, even if it has a non-zero budget.
     </Warning>
 
     ```yaml
@@ -58,7 +60,7 @@ Skills pass through four stages before injection:
         - devops
       exclude_keywords:
         - dry-run
-      max_context_tokens: 2000
+      max_context_tokens: 128
     ---
     ```
 
@@ -68,35 +70,81 @@ Skills pass through four stages before injection:
     | `patterns`           | Regex patterns. Each match adds significant weight — use for intent-specific phrases.           |
     | `tags`               | Short labels for broad domain matching (e.g. `blockchain`, `cli`).                             |
     | `exclude_keywords`   | Veto list — if any appear in the message, the skill scores zero regardless of other matches.    |
-    | `max_context_tokens` | Token budget this skill may consume per turn. Omitting it leaves the skill with a 2000-token budget, effectively excluding it. |
+    | `max_context_tokens` | Token budget this skill may consume per turn. **Must be > 0** — skills with 0 are never injected. |
 
     <Tip>
-    If a skill appears in `ironclaw skills list` but the agent doesn't use it, the most common cause is a missing or empty `activation` block.
+    If a skill appears in `ironclaw skills list` but the agent doesn't use it, check: (1) is `max_context_tokens > 0`? (2) does it have an `activation` block with keywords or patterns?
     </Tip>
 
   </Step>
 
   <Step title="Budget">
-    Skills are sorted by score descending. Starting from the highest-scoring skill, each is selected until the `SKILLS_MAX_TOKENS` budget is exhausted. Lower-scoring skills that don't fit are dropped for this turn.
-  </Step>
+    Skills are sorted by score descending. Starting from the highest-scoring skill, each is selected until the `skills.max_context_tokens` global budget is exhausted. Lower-scoring skills that don't fit are dropped for this turn.
 
-  <Step title="Attenuate">
-    Trust-based tool ceiling is applied. Installed skills (from ClawHub) lose access to dangerous tools regardless of what the skill requests. Trusted skills retain full tool access. See Trust Levels below.
+    The global budget defaults to **2 048 tokens** for home use (versus 4 000 in earlier versions).
   </Step>
 </Steps>
 
 ---
 
-## Trust Levels
+## Bundled Skills
 
-| Trust Level   | Source                                                      | Tool Access                                             |
-|---------------|-------------------------------------------------------------|---------------------------------------------------------|
-| **Trusted**   | User-placed in `~/.ironclaw/skills/` or workspace `skills/` | All tools available to the agent                        |
-| **Installed** | Downloaded from ClawHub registry via `skill_install`        | Read-only tools only — no shell, no file write, no HTTP |
+All bundled skills are trimmed to fit within local LLM context budgets:
 
-<Warning>
-Never place a skill file in the trusted directories unless you have reviewed its contents. A skill in `~/.ironclaw/skills/` has the same tool access as you do.
-</Warning>
+### Behavioural guidance (≤ 128 tokens)
+
+These skills inject lightweight behavioural rules. They activate frequently and must be minimal.
+
+| Skill | Triggers |
+|-------|---------|
+| `commit` | git commit, write commit message |
+| `decision-capture` | decision, tradeoff, chose |
+| `idea-parking` | idea, brainstorm, thought |
+| `code-review` | review code, PR review, pull request |
+| `qa-review` | QA, test plan, quality |
+| `review-checklist` | checklist, review, audit |
+| `review-readiness` | ready to ship, release ready |
+| `security-review` | security, vulnerability, audit |
+| `tech-debt-tracker` | tech debt, refactor, TODO |
+
+### Tool/procedure skills (≤ 256 tokens)
+
+These skills guide the agent through multi-step procedures.
+
+| Skill | Triggers |
+|-------|---------|
+| `coding` | write code, implement, function |
+| `local-test` | run tests, test suite, pytest, cargo test |
+| `new-project` | new project, scaffold, init |
+| `project-setup` | set up project, configure project |
+
+### Local service skills (≤ 256 tokens)
+
+These skills activate when using the bundled local tools.
+
+| Skill | Triggers | Requires |
+|-------|---------|---------|
+| `caldav` | calendar, meeting, schedule, event | `CALDAV_URL` |
+| `notes` | note, remember, memo, jot | none |
+| `local-search` | search files, find file, locate, grep | none |
+| `web-browse` | browse, search the web, open URL | `node`, `npx` |
+
+### Cloud / opt-in skills
+
+These skills require credentials and are **not activated** without them.
+
+| Skill | Requires |
+|-------|---------|
+| `github` | `GITHUB_TOKEN` |
+| `github-workflow` | `GITHUB_TOKEN` |
+| `linear` | `LINEAR_API_KEY` |
+
+### Plan-mode skills
+
+| Skill | Purpose |
+|-------|---------|
+| `plan-mode` | Enables explicit multi-step planning for complex tasks |
+| `routine-advisor` | Suggests automations and cron routines |
 
 ---
 
@@ -108,9 +156,7 @@ IronClaw discovers skills from three locations, checked in order:
 |---------------------------------|-----------|-------------------------------------------------------------|
 | `~/.ironclaw/skills/`           | Trusted   | User's global skills, available in all sessions             |
 | `<workspace>/skills/`           | Trusted   | Per-workspace skills, activated in that workspace's context |
-| `~/.ironclaw/installed_skills/` | Installed | Registry-installed skills from ClawHub                      |
-
-Skills in trusted directories are loaded as-is. Skills in `installed_skills/` have their tool access capped by the attenuation layer regardless of what they declare.
+| Project `skills/` directory     | Trusted   | Bundled skills shipped with IronClaw                        |
 
 Each skill lives in its own subdirectory named after the skill:
 
@@ -126,7 +172,52 @@ To verify that a skill was picked up correctly:
 ironclaw skills list
 ```
 
-A correctly installed skill appears with its name, version, and trust level. If a skill is missing from the list, check the directory structure and SKILL.md validity.
+A correctly installed skill appears with its name, version, budget, and trust level. A missing budget or zero budget will show a warning.
+
+---
+
+## Writing a Skill for Local LLMs
+
+For home use, keep skills small. Every token of skill context is a token you can't use for the conversation.
+
+**Good skill frontmatter:**
+
+```yaml
+---
+name: git-commit
+version: 1.0.0
+description: Write conventional Git commit messages
+activation:
+  keywords:
+    - commit
+    - git commit
+    - commit message
+  max_context_tokens: 96
+---
+```
+
+**Good skill body (≤ 96 tokens):**
+
+```markdown
+Write Git commit messages in Conventional Commits format:
+- `feat:` new feature
+- `fix:` bug fix
+- `docs:` documentation only
+- `chore:` tooling/maintenance
+
+Format: `type(scope): description` — imperative tense, no period.
+```
+
+### Budget guidelines
+
+| Category | Max budget | Reasoning |
+|----------|-----------|-----------|
+| Single-rule behavioural nudge | 64 tokens | A few lines of text |
+| Procedure with steps | 128–256 tokens | Numbered instructions |
+| Tool-using skill with examples | 256 tokens | Include one example |
+| Complex workflow | 256 tokens maximum | Break into multiple skills instead |
+
+Skills that exceed 256 tokens should be split into smaller, more focused skills.
 
 ---
 
@@ -139,5 +230,18 @@ When `SKILLS_AUTO_DISCOVER=true` (the default), IronClaw scans all skill directo
 SKILLS_AUTO_DISCOVER=true
 
 # Max tokens injected per turn across all active skills
-SKILLS_MAX_TOKENS=4000
+# Override in config.toml: [skills] max_context_tokens = 2048
+SKILLS_MAX_TOKENS=2048
+```
+
+---
+
+## Token Guard Integration
+
+Skills are subject to the [Token Guard](/capabilities/token-budget). If the assembled prompt exceeds `agent.max_prompt_tokens`, the token guard drops the lowest-scoring skills first. The skill with the highest relevance score is always kept unless it alone exceeds the total budget.
+
+To check which skills were used in the last turn, enable debug logging:
+
+```bash
+RUST_LOG=ironclaw_skills=debug IRONCLAW_PROFILE=local ironclaw
 ```
