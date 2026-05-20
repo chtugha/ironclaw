@@ -1420,7 +1420,12 @@ def run_loop(context, goal, actions, state, config):
                 if depth < 1:
                     decomp_subtasks = run_miniplan_call(goal)
                     if decomp_subtasks:
-                        state.pop("active_plan_doc_id", None)
+                        _abandoned_plan_doc_id = state.pop("active_plan_doc_id", None)
+                        if _abandoned_plan_doc_id:
+                            try:
+                                __record_skill_usage__(_abandoned_plan_doc_id, False)
+                            except Exception:
+                                pass
                         state.pop("plan_steps", None)
                         state.pop("plan_current_step", None)
                         _write_last_response(state, working_messages)
