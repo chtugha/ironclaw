@@ -140,7 +140,7 @@ cargo build --release
 [Ollama](https://ollama.com) runs local LLMs with a single command. Download it from [ollama.com/download](https://ollama.com/download), then pull a model:
 
 ```bash
-# Small and fast — good starting point (4 GB download)
+# Small and fast — good starting point (~2 GB download)
 ollama pull llama3.2
 
 # Better reasoning — needs ~8 GB VRAM or 16 GB RAM (5 GB download)

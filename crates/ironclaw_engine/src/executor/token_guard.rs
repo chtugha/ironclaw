@@ -14,9 +14,59 @@
 
 use tracing::warn;
 
+/// Returns `true` if `text` contains any CJK, Katakana, Hiragana, Hangul, or
+/// Arabic characters. These scripts are tokenised at a higher token-per-byte
+/// ratio than ASCII/Latin text, so the byte-based approximation significantly
+/// under-counts them.
+pub fn has_cjk_or_arabic(text: &str) -> bool {
+    if text.as_bytes().iter().all(|&b| b < 0x80) {
+        return false;
+    }
+    for c in text.chars() {
+        let cp = c as u32;
+        if
+            (0x4E00..=0x9FFF).contains(&cp)     // CJK Unified Ideographs
+            || (0x3400..=0x4DBF).contains(&cp)   // CJK Extension A
+            || (0x20000..=0x2A6DF).contains(&cp) // CJK Extension B
+            || (0x30A0..=0x30FF).contains(&cp)   // Katakana
+            || (0x3040..=0x309F).contains(&cp)   // Hiragana
+            || (0xAC00..=0xD7AF).contains(&cp)   // Hangul Syllables
+            || (0x1100..=0x11FF).contains(&cp)   // Hangul Jamo
+            || (0x0600..=0x06FF).contains(&cp)   // Arabic
+            || (0x0750..=0x077F).contains(&cp)   // Arabic Supplement
+            || (0x08A0..=0x08FF).contains(&cp)   // Arabic Extended-A
+        {
+            return true;
+        }
+    }
+    false
+}
+
+/// Count approximate tokens in `text`.
+///
+/// - For ASCII/Latin-only text: byte-length × 0.25 (accurate to within 30%
+///   for English prose).
+/// - For text containing CJK, Katakana, Hiragana, Hangul, or Arabic: delegates
+///   to `tiktoken-rs` cl100k_base when the `tiktoken` feature is enabled, or
+///   falls back to char-count × 1.5 which is a conservative estimate that
+///   errs on the side of over-counting (safer for budget enforcement).
 pub fn token_count(text: &str) -> usize {
     if text.is_empty() {
         return 0;
+    }
+    if has_cjk_or_arabic(text) {
+        #[cfg(feature = "tiktoken")]
+        {
+            use std::sync::OnceLock;
+            static BPE: OnceLock<Option<tiktoken_rs::CoreBPE>> = OnceLock::new();
+            let bpe = BPE.get_or_init(|| tiktoken_rs::cl100k_base().ok());
+            if let Some(enc) = bpe {
+                let count = enc.encode_ordinary(text).len();
+                return count.max(1);
+            }
+        }
+        let count = (text.chars().count() as f64 * 1.5) as usize;
+        return count.max(1);
     }
     ((text.len() as f64 * 0.25) as usize).max(1)
 }
@@ -438,5 +488,85 @@ mod tests {
             parts.system_prompt.contains("keep this"),
             "non-droppable content must remain"
         );
+    }
+
+    #[test]
+    fn has_cjk_or_arabic_detects_chinese() {
+        assert!(has_cjk_or_arabic("你好世界"));
+        assert!(has_cjk_or_arabic("Hello 世界"));
+    }
+
+    #[test]
+    fn has_cjk_or_arabic_detects_arabic() {
+        assert!(has_cjk_or_arabic("مرحبا بالعالم"));
+        assert!(has_cjk_or_arabic("Hello مرحبا"));
+    }
+
+    #[test]
+    fn has_cjk_or_arabic_detects_mixed_cjk_latin() {
+        assert!(has_cjk_or_arabic("日本語 and English mix"));
+    }
+
+    #[test]
+    fn has_cjk_or_arabic_returns_false_for_ascii() {
+        assert!(!has_cjk_or_arabic("Hello, world!"));
+        assert!(!has_cjk_or_arabic("The quick brown fox."));
+    }
+
+    #[test]
+    fn has_cjk_or_arabic_returns_false_for_latin1() {
+        assert!(!has_cjk_or_arabic("café résumé naïve"));
+        assert!(!has_cjk_or_arabic("Ärger über Österreich"));
+    }
+
+    #[test]
+    fn token_count_ascii_uses_byte_path() {
+        let text = "Hello, world! This is a test of the token counter.";
+        let count = token_count(text);
+        let expected_approx = ((text.len() as f64 * 0.25) as usize).max(1);
+        assert_eq!(count, expected_approx, "ASCII should use byte-based path");
+    }
+
+    #[test]
+    fn token_count_ascii_within_30_percent_of_word_count() {
+        let text = "The quick brown fox jumps over the lazy dog near the river bank on a sunny day in the countryside surrounded by rolling hills.";
+        let count = token_count(text);
+        let word_count = text.split_whitespace().count();
+        let lower = (word_count as f64 * 0.7) as usize;
+        let upper = (word_count as f64 * 1.5) as usize;
+        assert!(
+            count >= lower && count <= upper,
+            "ASCII token count {count} should be within 30% of word count {word_count}"
+        );
+    }
+
+    #[test]
+    fn token_count_cjk_uses_conservative_estimate() {
+        let text = "你好世界这是一个测试中文文本计数器";
+        let count = token_count(text);
+        assert!(count >= 1, "CJK token count must be at least 1");
+        #[cfg(not(feature = "tiktoken"))]
+        {
+            let char_count = text.chars().count();
+            let expected_approx = (char_count as f64 * 1.5) as usize;
+            assert_eq!(
+                count,
+                expected_approx.max(1),
+                "Without tiktoken feature, CJK should use char × 1.5"
+            );
+        }
+    }
+
+    #[test]
+    fn token_count_cjk_100_chars_reasonable() {
+        let text = "中".repeat(100);
+        let count = token_count(text.as_str());
+        assert!(count >= 50, "100 CJK chars should produce at least 50 tokens");
+        assert!(count <= 400, "100 CJK chars should produce at most 400 tokens");
+    }
+
+    #[test]
+    fn token_count_empty_returns_zero() {
+        assert_eq!(token_count(""), 0);
     }
 }

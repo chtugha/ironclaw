@@ -23,6 +23,7 @@
 //! - `__set_active_skills__` — persist selected skill provenance onto the thread
 //! - `__apply_token_guard__` — enforce token budget with priority-order degradation
 //! - `__save_plan_doc__` — persist a DocType::Plan MemoryDoc and return its ID
+//! - `__count_tokens__` — count approximate tokens in a string (hybrid CJK/ASCII)
 
 use std::sync::Arc;
 use std::sync::OnceLock;
@@ -658,6 +659,9 @@ pub async fn execute_orchestrator(
                     "__save_plan_doc__" => {
                         handle_save_plan_doc(args, thread, store).await
                     }
+
+                    // __count_tokens__(text) -> int
+                    "__count_tokens__" => handle_count_tokens(args),
 
                     // Unknown — let Monty resolve it (user-defined functions, builtins)
                     other => ExtFunctionResult::NotFound(other.to_string()),
@@ -2852,15 +2856,21 @@ fn handle_apply_token_guard(
 
 /// Handle `__save_plan_doc__(goal, steps, is_decomposition) -> doc_id str`.
 ///
-/// Creates a `DocType::Plan` MemoryDoc with the given goal, steps list, and
-/// decomposition flag, persists it via the store, and returns the doc ID string
-/// to Python.
+/// Creates or updates a `DocType::Plan` MemoryDoc with the given goal, steps
+/// list, and decomposition flag, persists it via the store, and returns the doc
+/// ID string to Python.
+///
+/// The read-modify-write is serialized via `SAVE_PLAN_DOC_LOCK` to prevent
+/// TOCTOU races where two concurrent threads with the same goal both read
+/// `existing = None` and each create a duplicate doc.
 async fn handle_save_plan_doc(
     args: &[MontyObject],
     thread: &Thread,
     store: Option<&Arc<dyn Store>>,
 ) -> ExtFunctionResult {
     use crate::types::memory::{DocType, MemoryDoc};
+
+    static SAVE_PLAN_DOC_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
     let Some(store) = store else {
         debug!("__save_plan_doc__: no store available");
@@ -2888,34 +2898,90 @@ async fn handle_save_plan_doc(
     let title_goal: String = goal.chars().take(64).collect();
     let title = format!("plan:{}", title_goal);
 
-    let metadata = serde_json::json!({
-        "is_template": false,
-        "is_decomposition": is_decomposition,
-        "goal": goal,
-        "steps": steps,
-        "execution_count": 0,
-        "failure_count": 0,
-        "confidence": 1.0,
-    });
+    let _guard = SAVE_PLAN_DOC_LOCK.lock().await;
 
-    let mut doc = MemoryDoc::new(
-        thread.project_id,
-        thread.user_id.clone(),
-        DocType::Plan,
-        title,
-        content,
-    );
-    doc.metadata = metadata;
-    doc.source_thread_id = Some(thread.id);
+    let existing = store
+        .list_memory_docs(thread.project_id, &thread.user_id)
+        .await
+        .unwrap_or_default()
+        .into_iter()
+        .find(|d| d.doc_type == DocType::Plan && d.title == title);
+
+    let doc = if let Some(mut existing_doc) = existing {
+        let execution_count = existing_doc
+            .metadata
+            .get("execution_count")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(0);
+        let failure_count = existing_doc
+            .metadata
+            .get("failure_count")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(0);
+
+        let confidence = (1.0_f64 - (failure_count as f64 / (execution_count as f64 + 1.0)))
+            .clamp(0.0, 1.0);
+        existing_doc.content = content;
+        existing_doc.updated_at = chrono::Utc::now();
+        existing_doc.metadata = serde_json::json!({
+            "is_template": false,
+            "is_decomposition": is_decomposition,
+            "goal": goal,
+            "steps": steps,
+            "execution_count": execution_count,
+            "failure_count": failure_count,
+            "confidence": confidence,
+        });
+        existing_doc.source_thread_id = Some(thread.id);
+        existing_doc
+    } else {
+        let metadata = serde_json::json!({
+            "is_template": false,
+            "is_decomposition": is_decomposition,
+            "goal": goal,
+            "steps": steps,
+            "execution_count": 0,
+            "failure_count": 0,
+            "confidence": 1.0,
+        });
+
+        let mut doc = MemoryDoc::new(
+            thread.project_id,
+            thread.user_id.clone(),
+            DocType::Plan,
+            title,
+            content,
+        );
+        doc.metadata = metadata;
+        doc.source_thread_id = Some(thread.id);
+        doc
+    };
 
     let doc_id = doc.id.0.to_string();
 
-    if let Err(e) = store.save_memory_doc(&doc).await {
+    if let Err(e) =
+        crate::runtime::with_trusted_internal_writes(store.save_memory_doc(&doc)).await
+    {
         debug!("__save_plan_doc__: failed to save: {e}");
         return ExtFunctionResult::Return(MontyObject::None);
     }
 
+    drop(_guard);
+
     ExtFunctionResult::Return(MontyObject::String(doc_id))
+}
+
+/// Handle `__count_tokens__(text) -> int`.
+///
+/// Uses the same hybrid CJK/Arabic-aware approximation as [`token_guard::token_count`].
+fn handle_count_tokens(args: &[MontyObject]) -> ExtFunctionResult {
+    let text = match args.first() {
+        Some(MontyObject::String(s)) => s.clone(),
+        Some(other) => monty_to_string(other),
+        None => return ExtFunctionResult::Return(MontyObject::Int(0)),
+    };
+    let count = super::token_guard::token_count(&text);
+    ExtFunctionResult::Return(MontyObject::Int(count as i64))
 }
 
 // ── Helpers ─────────────────────────────────────────────────
@@ -5743,6 +5809,132 @@ FINAL(batch_error_count)
         assert!(
             action_failed,
             "expected ActionFailed event alongside CodeExecutionFailed"
+        );
+    }
+
+    // ── save_plan_doc deduplication ──────────────────────────────
+
+    #[tokio::test]
+    async fn save_plan_doc_same_goal_creates_only_one_doc() {
+        let store: Arc<dyn Store> = Arc::new(crate::tests::InMemoryStore::with_docs(vec![]));
+        let project_id = ProjectId::new();
+        let mut thread = Thread::new(
+            "install vim",
+            crate::types::thread::ThreadType::Foreground,
+            project_id,
+            "test-user",
+            crate::types::thread::ThreadConfig::default(),
+        );
+        thread.transition_to(ThreadState::Running, None).unwrap();
+
+        let steps_json = serde_json::json!(["Step 1", "Step 2"]);
+        let args1 = vec![
+            json_to_monty(&serde_json::json!("install vim")),
+            json_to_monty(&steps_json),
+            json_to_monty(&serde_json::json!(false)),
+        ];
+        let result1 = handle_save_plan_doc(&args1, &thread, Some(&store)).await;
+        let id1 = match result1 {
+            ExtFunctionResult::Return(MontyObject::String(ref s)) => s.clone(),
+            _ => panic!("expected String return from first save"),
+        };
+
+        let args2 = vec![
+            json_to_monty(&serde_json::json!("install vim")),
+            json_to_monty(&serde_json::json!(["Step A", "Step B", "Step C"])),
+            json_to_monty(&serde_json::json!(false)),
+        ];
+        let result2 = handle_save_plan_doc(&args2, &thread, Some(&store)).await;
+        let id2 = match result2 {
+            ExtFunctionResult::Return(MontyObject::String(ref s)) => s.clone(),
+            _ => panic!("expected String return from second save"),
+        };
+
+        assert_eq!(id1, id2, "second save must return the same doc_id as the first (update, not insert)");
+
+        let docs = store
+            .list_memory_docs(project_id, "test-user")
+            .await
+            .unwrap();
+        let plan_docs: Vec<_> = docs
+            .iter()
+            .filter(|d| d.doc_type == crate::types::memory::DocType::Plan)
+            .collect();
+        assert_eq!(plan_docs.len(), 1, "expected exactly one plan doc after two saves with same goal");
+
+        let steps = plan_docs[0]
+            .metadata
+            .get("steps")
+            .and_then(|v| v.as_array())
+            .expect("steps array");
+        assert_eq!(steps.len(), 3, "updated steps should reflect second save");
+    }
+
+    #[tokio::test]
+    async fn save_plan_doc_update_preserves_execution_count() {
+        let store: Arc<dyn Store> = Arc::new(crate::tests::InMemoryStore::with_docs(vec![]));
+        let project_id = ProjectId::new();
+        let mut thread = Thread::new(
+            "send email",
+            crate::types::thread::ThreadType::Foreground,
+            project_id,
+            "test-user",
+            crate::types::thread::ThreadConfig::default(),
+        );
+        thread.transition_to(ThreadState::Running, None).unwrap();
+
+        let args_first = vec![
+            json_to_monty(&serde_json::json!("send email")),
+            json_to_monty(&serde_json::json!(["Open client", "Compose", "Send"])),
+            json_to_monty(&serde_json::json!(false)),
+        ];
+        handle_save_plan_doc(&args_first, &thread, Some(&store)).await;
+
+        {
+            let mut docs = store.list_memory_docs(project_id, "test-user").await.unwrap();
+            let doc = docs.iter_mut().find(|d| d.doc_type == crate::types::memory::DocType::Plan).unwrap();
+            doc.metadata["execution_count"] = serde_json::json!(5);
+            doc.metadata["failure_count"] = serde_json::json!(1);
+            store.save_memory_doc(doc).await.unwrap();
+        }
+
+        let args_second = vec![
+            json_to_monty(&serde_json::json!("send email")),
+            json_to_monty(&serde_json::json!(["Open client", "Attach file", "Compose", "Send"])),
+            json_to_monty(&serde_json::json!(false)),
+        ];
+        handle_save_plan_doc(&args_second, &thread, Some(&store)).await;
+
+        let docs = store.list_memory_docs(project_id, "test-user").await.unwrap();
+        let plan_docs: Vec<_> = docs
+            .iter()
+            .filter(|d| d.doc_type == crate::types::memory::DocType::Plan)
+            .collect();
+        assert_eq!(plan_docs.len(), 1, "expected exactly one plan doc");
+
+        let meta = &plan_docs[0].metadata;
+        assert_eq!(
+            meta.get("execution_count").and_then(|v| v.as_u64()),
+            Some(5),
+            "execution_count must be preserved"
+        );
+        assert_eq!(
+            meta.get("failure_count").and_then(|v| v.as_u64()),
+            Some(1),
+            "failure_count must be preserved"
+        );
+
+        let steps = meta.get("steps").and_then(|v| v.as_array()).expect("steps");
+        assert_eq!(steps.len(), 4, "steps should reflect second save");
+
+        let confidence = meta
+            .get("confidence")
+            .and_then(|v| v.as_f64())
+            .expect("confidence field");
+        let expected_confidence = 1.0_f64 - (1.0_f64 / (5.0_f64 + 1.0_f64));
+        assert!(
+            (confidence - expected_confidence).abs() < 1e-9,
+            "confidence should be recomputed from preserved counts; got {confidence}"
         );
     }
 }

@@ -22,6 +22,7 @@
 #   __set_active_skills__(skills)                -> None
 #   __apply_token_guard__(parts)                 -> {"dropped": [...], "fits": bool, "survivors": {...}, "system_prompt": str, "conversation_history": [...]}
 #   __save_plan_doc__(goal, steps, is_decomposition) -> doc_id str | None
+#   __count_tokens__(text)                       -> int
 #
 # Context variables (injected by Rust before execution):
 #   context  - list of prior messages [{role, content}]
@@ -35,9 +36,34 @@ import json
 import re
 
 
+def _has_cjk_or_arabic(text):
+    for ch in text:
+        cp = ord(ch)
+        if (
+            0x4E00 <= cp <= 0x9FFF    # CJK Unified Ideographs
+            or 0x3400 <= cp <= 0x4DBF  # CJK Extension A
+            or 0x20000 <= cp <= 0x2A6DF  # CJK Extension B
+            or 0x30A0 <= cp <= 0x30FF  # Katakana
+            or 0x3040 <= cp <= 0x309F  # Hiragana
+            or 0xAC00 <= cp <= 0xD7AF  # Hangul Syllables
+            or 0x1100 <= cp <= 0x11FF  # Hangul Jamo
+            or 0x0600 <= cp <= 0x06FF  # Arabic
+            or 0x0750 <= cp <= 0x077F  # Arabic Supplement
+            or 0x08A0 <= cp <= 0x08FF  # Arabic Extended-A
+        ):
+            return True
+    return False
+
+
 def _token_count(text):
     if not text:
         return 0
+    try:
+        return max(1, __count_tokens__(text))
+    except Exception:
+        pass
+    if _has_cjk_or_arabic(text):
+        return max(1, int(len(text) * 1.5))
     return max(1, int(len(text.encode("utf-8")) * 0.25))
 
 

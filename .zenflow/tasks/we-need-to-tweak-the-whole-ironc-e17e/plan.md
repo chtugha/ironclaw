@@ -556,7 +556,8 @@ Verification:
 - Unit test: fire 5 mission threads, complete 3, verify count returns 2 without loading all 5 from the store
 - Benchmark: with 200 thread_history entries, verify `fire_mission` does not regress to O(N) store calls
 
-### [ ] Step 21: Deduplicate plan docs in `__save_plan_doc__` to prevent redundant cache entries
+### [x] Step 21: Deduplicate plan docs in `__save_plan_doc__` to prevent redundant cache entries
+<!-- chat-id: 6a6c2ade-4c04-4aae-a2df-f87c70dc75a3 -->
 
 `handle_save_plan_doc` in `orchestrator.rs` (line 2892) always creates a new `MemoryDoc` with a fresh `DocId` (UUID). Two threads with the same goal (or goals sharing a 64-char prefix) each create independent plan docs with identical titles. The `retrieve_context` path surfaces both, wasting token budget and potentially confusing plan-confidence scoring.
 
@@ -570,7 +571,8 @@ Verification:
 - Unit test: save two plans with the same goal — verify only one doc exists in the store
 - Unit test: save a plan, then save again with updated steps — verify the existing doc was updated and execution_count is preserved
 
-### [ ] Step 22: Integrate a proper tokenizer for accurate CJK/multilingual token counting
+### [x] Step 22: Integrate a proper tokenizer for accurate CJK/multilingual token counting
+<!-- chat-id: 5941a3aa-8f91-4196-bb22-3b25f58c03bf -->
 
 The current token counting approximation (`len(bytes) * 0.25`) under-estimates token counts for CJK, Arabic, and emoji-heavy text by up to 50–100%. For ASCII-heavy English content the approximation is acceptable, but for multilingual home-use scenarios this creates a real gap where the token guard approves prompts that exceed the actual model's context window.
 

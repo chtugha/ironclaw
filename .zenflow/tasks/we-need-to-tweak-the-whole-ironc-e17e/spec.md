@@ -32,13 +32,12 @@
 
 ### 1.3 Token Counting Convention
 
-Throughout this release, token counting uses the existing byte-based approximation already used in `selector.rs`:
+Token counting uses a **hybrid script-detection approach**:
 
-```rust
-let approx_tokens = (content.len() as f64 * 0.25) as usize;
-```
+- **ASCII/Latin text**: byte-based approximation `(len(bytes) * 0.25)` — accurate to within 30% for English prose (≈ 4 bytes per token).
+- **CJK/Arabic/Hangul text**: detected via `has_cjk_or_arabic()` Unicode range scan. Delegates to `tiktoken-rs` cl100k_base when the optional `tiktoken` Cargo feature is enabled. Falls back to `char_count * 1.5` (conservative over-estimate, errs on the side of caution for budget enforcement).
 
-Rust's `str::len()` returns the **byte length** (not Unicode character count). The Python orchestrator mirrors this with `len(text.encode("utf-8")) * 0.25`. Both layers count bytes, ensuring non-ASCII text (CJK, Arabic, emoji) is measured consistently. ≈ 4 bytes per token for English prose. No external tokenizer is required.
+The Rust implementation lives in `token_guard::token_count()`. The Python orchestrator calls the `__count_tokens__` host function for consistency, with a local fallback using the same CJK/Arabic heuristic when the host function is unavailable.
 
 ---
 
@@ -1478,7 +1477,7 @@ Key integration scenarios to verify:
 |---|---|
 | C1 — Five primitives intact | `DocType::Plan` already defined; `MissionCadence::Idle` added via new variant, no table change needed |
 | C2 — No circular dep | `crates/ironclaw_engine` gains `TokenGuard`, `PlanAnchor`, `Tier0Prompt` modules — all self-contained, no `src/` import |
-| C3 — Byte-based token approximation | `len(bytes) * 0.25` used everywhere — Rust `str::len()` returns bytes; Python uses `len(text.encode("utf-8"))`. Both count bytes, not Unicode characters, ensuring non-ASCII text (CJK, Arabic, emoji) is measured consistently across layers. No tokenizer integration. |
+| C3 — Hybrid token approximation | ASCII/Latin text uses `len(bytes) * 0.25` (fast byte-based). CJK/Arabic/Hangul text delegates to `tiktoken-rs` cl100k_base (optional `tiktoken` feature) for accurate counts, falling back to `char_count * 1.5` (conservative over-estimate). Python mirrors via `__count_tokens__` host function with same fallback chain. |
 | C4 — Node.js optional | `playwright.json` marked `auto_launch: true`; absence → `NeedsSetup` status, not a startup failure |
 | C5 — Staged v1 removal | Stage order in §3.1; each stage verified with `cargo check + test` |
 | C6 — Cloud path unaffected | `build_codeact_system_prompt_with_docs()` unchanged; only the `is_local_backend()` branch uses Tier 0 |

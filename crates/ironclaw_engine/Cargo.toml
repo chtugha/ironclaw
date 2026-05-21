@@ -28,6 +28,10 @@ tokio = { version = "1", features = ["sync", "time", "macros", "rt"] }
 tracing = "0.1"
 uuid = { version = "1", features = ["v4", "v5", "serde"] }
 sha2 = "0.10"
+tiktoken-rs = { version = "0.5", optional = true }
+
+[features]
+tiktoken = ["tiktoken-rs"]
 
 [dev-dependencies]
 pretty_assertions = "1"
